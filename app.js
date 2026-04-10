@@ -70,6 +70,12 @@ async function fetchGallery(force = false) {
   return data;
 }
 
+/** Constructs Cloudinary CDN URL from list-endpoint resource fields (no secure_url in list response). */
+function buildCloudinaryUrl(r) {
+  const v = r.version ? `v${r.version}/` : '';
+  return `https://res.cloudinary.com/${CONFIG.CLOUDINARY_CLOUD_NAME}/image/upload/${v}${r.public_id}.${r.format || 'jpg'}`;
+}
+
 /**
  * Parses raw Cloudinary resource list into gallery records.
  * Singles: { type:'single', url, name, category, publicId, uploadedAt }
@@ -88,7 +94,7 @@ function parseResources(resources) {
     const name     = ctx.caption || r.public_id.split('/').pop();
     const category = ctx.alt     || 'other';
     const type     = ctx.type    || 'single';
-    const url      = r.secure_url;
+    const url      = r.secure_url || buildCloudinaryUrl(r);
     const publicId = r.public_id;
     const uploadedAt = r.created_at || new Date().toISOString();
 
