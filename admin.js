@@ -1,13 +1,10 @@
 /**
- * admin.js — Admin panel logic
+ * admin.js — Admin panel logic v4
  *
- * Features:
- *   1. AUTH        — localStorage persistence (survives browser close)
- *   2. UPLOAD      — single image OR multi-image collection (slider)
- *   3. CATEGORY    — Logo / Photo / custom "other" text
- *   4. PREVIEW     — thumbnail strip before upload
- *   5. DRAG-DROP   — drag files onto the upload card
- *   6. EXPORT/IMPORT — JSON backup/restore
+ * Storage: Cloudinary is the source of truth.
+ * Upload encodes all metadata (name, category, type, colId, seq)
+ * in Cloudinary context + tags so the public list endpoint returns them.
+ * No localStorage writes for image data.
  */
 
 'use strict';
@@ -17,31 +14,49 @@
 const AUTH = {
   USERNAME:    'korata',
   PASSWORD:    'korata1250',
-  STORAGE_KEY: 'admin_authed',  // localStorage — persists after browser close
+  STORAGE_KEY: 'admin_authed',
 };
 
-function isAuthed()  { return localStorage.getItem(AUTH.STORAGE_KEY) === '1'; }
-function doLogin()   { localStorage.setItem(AUTH.STORAGE_KEY, '1'); }
-function doLogout()  { localStorage.removeItem(AUTH.STORAGE_KEY); window.location.reload(); }
+function isAuthed()      { return localStorage.getItem(AUTH.STORAGE_KEY) === '1'; }
+function doLogin()       { localStorage.setItem(AUTH.STORAGE_KEY, '1'); }
+function doLogout()      { localStorage.removeItem(AUTH.STORAGE_KEY); window.location.reload(); }
 function checkCred(u, p) { return u === AUTH.USERNAME && p === AUTH.PASSWORD; }
 
 /* ── 2. UPLOAD ENGINE ─────────────────────────────────────── */
 
 /**
- * Uploads one file to Cloudinary with name + category stored in context.
- * @returns {Promise<{url:string, publicId:string}>}
+ * Uploads one file to Cloudinary.
+ * Encodes ALL metadata in context + tags so the public list endpoint
+ * returns them on every device without any backend.
+ *
+ * @param {File}   file
+ * @param {string} name      display name
+ * @param {string} category  slug
+ * @param {object} [extra]   { colId, seq } for collection images
  */
-async function uploadToCloudinary(file, name, category) {
-  const { CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET } = CONFIG;
+async function uploadToCloudinary(file, name, category, extra = {}) {
+  const { CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET, GALLERY_TAG } = CONFIG;
   const endpoint = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
 
-  const form = new FormData();
-  form.append('file',           file);
-  form.append('upload_preset',  CLOUDINARY_UPLOAD_PRESET);
-  // Store name & category as Cloudinary context metadata
   const safeName = name.replace(/[|=]/g, ' ').trim() || file.name;
-  form.append('context', `caption=${safeName}|alt=${category}`);
-  form.append('tags', category);
+
+  // Context fields — returned by the public list endpoint
+  let ctx = `caption=${safeName}|alt=${category}`;
+  if (extra.colId) {
+    ctx += `|type=collection|col=${extra.colId}|seq=${extra.seq ?? 0}`;
+  } else {
+    ctx += `|type=single`;
+  }
+
+  // Tags: master gallery tag + category + optional collection id
+  const tags = [GALLERY_TAG, category];
+  if (extra.colId) tags.push(extra.colId);
+
+  const form = new FormData();
+  form.append('file',          file);
+  form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  form.append('context',       ctx);
+  form.append('tags',          tags.join(','));
 
   const res = await fetch(endpoint, { method: 'POST', body: form });
   if (!res.ok) {
@@ -81,7 +96,7 @@ function renderPreview() {
 
   strip.innerHTML = '';
   pendingFiles.forEach((file, i) => {
-    const thumb  = document.createElement('div');
+    const thumb = document.createElement('div');
     thumb.className = 'preview-thumb';
     thumb.setAttribute('role', 'listitem');
 
@@ -92,7 +107,7 @@ function renderPreview() {
     const rm = document.createElement('button');
     rm.className = 'remove-preview';
     rm.textContent = '✕';
-    rm.setAttribute('aria-label', `إزالة ${file.name}`);
+    rm.setAttribute('aria-label', `Remove ${file.name}`);
     rm.addEventListener('click', e => {
       e.stopPropagation();
       URL.revokeObjectURL(img.src);
@@ -104,11 +119,10 @@ function renderPreview() {
     strip.appendChild(thumb);
   });
 
-  // Badge showing "will become slider" when >1 file
   if (pendingFiles.length > 1) {
     const badge = document.createElement('div');
     badge.className = 'slider-badge';
-    badge.textContent = `📽 ${pendingFiles.length} صور → slider`;
+    badge.textContent = `📽 ${pendingFiles.length} ${currentLang === 'ar' ? 'صور → slider' : 'images → slider'}`;
     strip.appendChild(badge);
   }
 
@@ -117,10 +131,6 @@ function renderPreview() {
 
 /* ── 5. UPLOAD HANDLER ────────────────────────────────────── */
 
-/**
- * Resolves category: if "other", uses custom text input value.
- * @returns {string}
- */
 function resolveCategory() {
   const sel = document.getElementById('inp-category')?.value || 'other';
   if (sel === 'other') {
@@ -149,24 +159,20 @@ async function handleUpload() {
   if (btnSelect) btnSelect.disabled = true;
   setProgress(0);
 
-  const total  = pendingFiles.length;
+  const total        = pendingFiles.length;
   const isCollection = total > 1;
+  // Unique collection ID — used to group images in Cloudinary tags
+  const colId = isCollection ? `hg_col_${Date.now()}` : null;
   let done = 0, failed = 0;
-  const collectionImages = [];
 
   for (const file of pendingFiles) {
-    // For collections each image shares the project name
-    const imgLabel = isCollection ? `${name} (${done + 1}/${total})` : name;
-    setStatus(`جاري رفع ${done + 1} من ${total}: ${file.name}`, '');
+    setStatus(`${t('uploading')} ${done + 1} ${t('of')} ${total}: ${file.name}`, '');
+    const extra = colId ? { colId, seq: done } : {};
 
     try {
-      const { url, publicId } = await uploadToCloudinary(file, imgLabel, category);
-      if (isCollection) {
-        collectionImages.push({ url, publicId });
-      } else {
-        // Single image → normal record
-        addImage({ type: 'single', url, name, category, publicId, uploadedAt: new Date().toISOString() });
-      }
+      // Upload to Cloudinary — metadata stored in context+tags
+      // No localStorage write needed; Cloudinary IS the source of truth
+      await uploadToCloudinary(file, name, category, extra);
       done++;
       setProgress((done / total) * 100);
     } catch (err) {
@@ -175,28 +181,22 @@ async function handleUpload() {
     }
   }
 
-  // Save collection as one record
-  if (isCollection && collectionImages.length > 0) {
-    addImage({
-      type:        'collection',
-      name,
-      category,
-      images:      collectionImages,      // array of { url, publicId }
-      uploadedAt:  new Date().toISOString(),
-    });
-  }
+  // Force-invalidate cache so next render fetches fresh data
+  invalidateCache();
 
-  // Reset
+  // Reset form
   btnUpload?.classList.remove('loading');
   if (btnUpload) btnUpload.disabled = false;
   if (btnSelect) btnSelect.disabled = false;
-  document.getElementById('file-input').value        = '';
-  document.getElementById('inp-img-name').value      = '';
-  document.getElementById('inp-custom-cat').value    = '';
+  document.getElementById('file-input').value     = '';
+  document.getElementById('inp-img-name').value   = '';
+  document.getElementById('inp-custom-cat').value = '';
   pendingFiles = [];
   renderPreview();
   setProgress(0);
-  renderGallery({ isAdmin: true, showFilter: true });
+
+  // Re-render gallery (force-fetches from Cloudinary)
+  await renderGallery({ isAdmin: true, showFilter: true, force: true });
 
   if (failed === 0) {
     setStatus(`✓ ${t('uploadOk')}`, 'success');
@@ -224,12 +224,10 @@ function addDragHandlers(zone) {
   });
 }
 
-
-/* ── 8. WIRING ────────────────────────────────────────────── */
+/* ── 7. WIRING ────────────────────────────────────────────── */
 
 document.addEventListener('DOMContentLoaded', () => {
 
-  /* ─ Auth check ─ */
   const loginOverlay = document.getElementById('login-overlay');
   const adminDash    = document.getElementById('admin-dashboard');
 
@@ -242,7 +240,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => document.getElementById('inp-username')?.focus(), 120);
   }
 
-  /* ─ Login form ─ */
+  /* Login form */
   document.getElementById('login-form')?.addEventListener('submit', e => {
     e.preventDefault();
     const u      = document.getElementById('inp-username').value.trim();
@@ -270,12 +268,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 500);
   });
 
-  /* ─ Logout ─ */
+  /* Logout */
   document.getElementById('btn-logout')?.addEventListener('click', () => {
-    if (confirm('تسجيل الخروج؟')) doLogout();
+    if (confirm(currentLang === 'ar' ? 'تسجيل الخروج؟' : 'Logout?')) doLogout();
   });
 
-  /* ─ Custom category toggle ─ */
+  /* Custom category toggle */
   const catSelect     = document.getElementById('inp-category');
   const customCatWrap = document.getElementById('custom-cat-wrap');
   const customCatInp  = document.getElementById('inp-custom-cat');
@@ -287,7 +285,7 @@ document.addEventListener('DOMContentLoaded', () => {
     else if (customCatInp) customCatInp.value = '';
   });
 
-  /* ─ File selection ─ */
+  /* File selection */
   const fileInput = document.getElementById('file-input');
   const btnSelect = document.getElementById('btn-select');
   const dropZone  = document.getElementById('drop-zone');
@@ -309,19 +307,27 @@ document.addEventListener('DOMContentLoaded', () => {
   addDragHandlers(dropZone);
   addDragHandlers(document.body);
 
-  /* ─ Upload ─ */
+  /* Upload */
   document.getElementById('btn-upload')?.addEventListener('click', e => {
     e.stopPropagation();
     handleUpload();
   });
 
-  /* ─ Clear all ─ */
-  document.getElementById('btn-clear-all')?.addEventListener('click', () => {
-    if (!confirm(currentLang === 'ar' ? 'مسح كل الصور؟' : 'Clear all images?')) return;
-    saveImages([]);
-    renderGallery({ isAdmin: true, showFilter: true });
-    showToast(t('deleted'), 'success');
+  /* Refresh gallery (force-fetch from Cloudinary) */
+  document.getElementById('btn-refresh')?.addEventListener('click', () => {
+    invalidateCache();
+    renderGallery({ isAdmin: true, showFilter: true, force: true });
+    showToast(currentLang === 'ar' ? 'جاري التحديث…' : 'Refreshing…', '');
   });
 
+  /* Clear hidden list */
+  document.getElementById('btn-clear-all')?.addEventListener('click', () => {
+    if (!confirm(currentLang === 'ar'
+      ? 'مسح قائمة الصور المخفية؟ (الصور تبقى على Cloudinary)'
+      : 'Clear hidden list? (Images stay on Cloudinary)')) return;
+    localStorage.removeItem(CONFIG.HIDDEN_KEY);
+    invalidateCache();
+    renderGallery({ isAdmin: true, showFilter: true, force: true });
+    showToast(t('deleted'), 'success');
+  });
 });
-

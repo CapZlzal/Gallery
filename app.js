@@ -1,15 +1,23 @@
 /**
- * app.js — Hazem Gallery shared logic v3
+ * app.js — Hazem Gallery v4
  *
- * 1. CONFIG       — Cloudinary credentials
- * 2. STORAGE      — localStorage CRUD
- * 3. I18N         — AR / EN language system
- * 4. THEME        — dark / light toggle
- * 5. GALLERY      — render cards (single + collection slider)
- * 6. LIGHTBOX     — single image OR collection with prev/next + keyboard
- * 7. FILTER BAR   — category chips
- * 8. TOAST        — notifications
- * 9. WIRING       — DOMContentLoaded shared events
+ * Storage: CLOUDINARY as single source of truth
+ *   - Images fetched via public tag-list endpoint on every page load
+ *   - Metadata (name, category, type, collection) encoded in Cloudinary context+tags
+ *   - Soft-delete: publicIds stored in localStorage('hg_hidden') — per-device
+ *   - sessionStorage cache (5 min) avoids hammering the API
+ *
+ * 1. CONFIG       — Cloudinary credentials + keys
+ * 2. CLOUDINARY FETCH — load gallery from Cloudinary tag-list API
+ * 3. SOFT-DELETE   — localStorage hidden-id list
+ * 4. I18N         — AR / EN
+ * 5. THEME        — dark / light
+ * 6. GALLERY RENDER — async, with loading state
+ * 7. CARD BUILDERS — single + collection slider
+ * 8. FILTER BAR
+ * 9. LIGHTBOX     — collection prev/next + keyboard
+ * 10. TOAST
+ * 11. WIRING
  */
 
 'use strict';
@@ -18,30 +26,123 @@
 const CONFIG = {
   CLOUDINARY_CLOUD_NAME:    'dd3tq14rb',
   CLOUDINARY_UPLOAD_PRESET: 'portfolio_unsigned',
-  STORAGE_KEY:   'gallery_images',
+  GALLERY_TAG:   'hg_gallery',     // master tag on every upload
+  HIDDEN_KEY:    'hg_hidden',      // localStorage: array of hidden publicIds
+  CACHE_KEY:     'hg_cache',       // sessionStorage: cached fetch result
+  CACHE_TTL_MS:  5 * 60 * 1000,   // 5 minutes
   WHATSAPP_NUM:  '201099160942',
   LANG_KEY:      'hg_lang',
   THEME_KEY:     'hg_theme',
 };
 
-/* ── 2. STORAGE ─────────────────────────────────────────────── */
-function loadImages() {
-  try { return JSON.parse(localStorage.getItem(CONFIG.STORAGE_KEY) || '[]'); }
-  catch { return []; }
-}
-function saveImages(list) { localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(list)); }
-function addImage(rec)    { const l = loadImages(); l.unshift(rec); saveImages(l); }
-function removeImage(rec) {
-  const key = rec.url || (rec.name + rec.uploadedAt);
-  saveImages(loadImages().filter(i => (i.url || i.name + i.uploadedAt) !== key));
+/* ── 2. CLOUDINARY FETCH ────────────────────────────────────── */
+
+/**
+ * Returns the parsed gallery array from Cloudinary.
+ * Uses sessionStorage cache (TTL = 5 min).
+ * @param {boolean} [force=false] - bypass cache
+ * @returns {Promise<Array>}
+ */
+async function fetchGallery(force = false) {
+  // Check cache
+  if (!force) {
+    const raw = sessionStorage.getItem(CONFIG.CACHE_KEY);
+    if (raw) {
+      try {
+        const { ts, data } = JSON.parse(raw);
+        if (Date.now() - ts < CONFIG.CACHE_TTL_MS) return data;
+      } catch { /* stale/corrupt cache — continue */ }
+    }
+  }
+
+  const url = `https://res.cloudinary.com/${CONFIG.CLOUDINARY_CLOUD_NAME}/image/list/${CONFIG.GALLERY_TAG}.json`;
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    if (res.status === 404) return []; // no images yet
+    throw new Error(`Cloudinary list failed: ${res.status}`);
+  }
+
+  const json    = await res.json();
+  const data    = parseResources(json.resources || []);
+  const payload = JSON.stringify({ ts: Date.now(), data });
+  try { sessionStorage.setItem(CONFIG.CACHE_KEY, payload); } catch { /* storage full */ }
+  return data;
 }
 
-/* ── 3. I18N ────────────────────────────────────────────────── */
+/**
+ * Parses raw Cloudinary resource list into gallery records.
+ * Singles: { type:'single', url, name, category, publicId, uploadedAt }
+ * Collections: { type:'collection', name, category, images:[{url,publicId}], uploadedAt }
+ */
+function parseResources(resources) {
+  const singles    = [];
+  const colMap     = {}; // colId → { meta, images:[] }
+
+  const hidden = getHidden();
+
+  resources.forEach(r => {
+    if (hidden.has(r.public_id)) return; // soft-deleted
+
+    const ctx      = r.context?.custom || {};
+    const name     = ctx.caption || r.public_id.split('/').pop();
+    const category = ctx.alt     || 'other';
+    const type     = ctx.type    || 'single';
+    const url      = r.secure_url;
+    const publicId = r.public_id;
+    const uploadedAt = r.created_at || new Date().toISOString();
+
+    if (type === 'collection') {
+      const colId = ctx.col || publicId;
+      const seq   = parseInt(ctx.seq) || 0;
+      if (!colMap[colId]) {
+        colMap[colId] = { name, category, uploadedAt, images: [] };
+      }
+      colMap[colId].images.push({ url, publicId, seq });
+    } else {
+      singles.push({ type:'single', url, name, category, publicId, uploadedAt });
+    }
+  });
+
+  const collections = Object.values(colMap).map(col => ({
+    type:       'collection',
+    name:       col.name,
+    category:   col.category,
+    uploadedAt: col.uploadedAt,
+    images:     col.images
+      .sort((a, b) => a.seq - b.seq)
+      .map(i => ({ url: i.url, publicId: i.publicId })),
+  }));
+
+  return [...singles, ...collections]
+    .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+}
+
+/** Invalidates the sessionStorage cache (call after upload/delete). */
+function invalidateCache() {
+  sessionStorage.removeItem(CONFIG.CACHE_KEY);
+}
+
+/* ── 3. SOFT-DELETE ─────────────────────────────────────────── */
+
+function getHidden() {
+  try { return new Set(JSON.parse(localStorage.getItem(CONFIG.HIDDEN_KEY) || '[]')); }
+  catch { return new Set(); }
+}
+
+/** Adds publicId(s) to the hidden list and clears cache. */
+function hideImages(...publicIds) {
+  const set = getHidden();
+  publicIds.forEach(id => set.add(id));
+  localStorage.setItem(CONFIG.HIDDEN_KEY, JSON.stringify([...set]));
+  invalidateCache();
+}
+
+/* ── 4. I18N ────────────────────────────────────────────────── */
 const I18N = {
   ar: {
     siteTitle:    'معرض حازم',
     galleryTitle: 'أعمالنا',
-    adminLogin:   'دخول الأدمن',
     filterAll:    'الكل',
     emptyMain:    'لا توجد صور بعد.\nادخل كأدمن لرفع الصور.',
     emptyAdmin:   'ارفع صورتك الأولى من الأعلى',
@@ -59,16 +160,12 @@ const I18N = {
     customCatPH:  'مثال: موشن جرافيك، بنر',
     selectFiles:  'اختيار الصور',
     upload:       'رفع',
-    exportJson:   'تصدير JSON',
-    importJson:   'استيراد JSON',
     clearAll:     'مسح الكل',
     uploading:    'جاري الرفع',
     of:           'من',
     uploadOk:     'تم الرفع بنجاح!',
     uploadFail:   'فشل الرفع',
-    deleted:      'تم الحذف',
-    exported:     'تم التصدير!',
-    imported:     'تم الاستيراد',
+    deleted:      'تم الإخفاء من المعرض',
     loginTitle:   'لوحة الأدمن',
     loginSub:     'أدخل بيانات الدخول للمتابعة',
     userLbl:      'اسم المستخدم',
@@ -79,16 +176,19 @@ const I18N = {
     logout:       'خروج',
     formTitle:    'تفاصيل الصورة',
     uploadedGallery: 'الصور المرفوعة',
+    loading:      'جاري تحميل الصور…',
+    loadError:    'تعذّر تحميل الصور. تحقق من Cloudinary.',
+    refresh:      'تحديث',
+    download:     'تحميل',
   },
   en: {
     siteTitle:    'Hazem Gallery',
     galleryTitle: 'Our Work',
-    adminLogin:   'Admin Login',
     filterAll:    'All',
     emptyMain:    'No images yet.\nLog in as admin to upload.',
     emptyAdmin:   'Upload your first image above',
     wa:           'WhatsApp',
-    del:          'Delete',
+    del:          'Hide',
     totalImages:  'Total Images',
     totalCol:     'Collections',
     totalCat:     'Categories',
@@ -101,16 +201,12 @@ const I18N = {
     customCatPH:  'e.g. Motion Graphic, Banner',
     selectFiles:  'Select Images',
     upload:       'Upload',
-    exportJson:   'Export JSON',
-    importJson:   'Import JSON',
-    clearAll:     'Clear All',
+    clearAll:     'Clear Hidden List',
     uploading:    'Uploading',
     of:           'of',
     uploadOk:     'Upload successful!',
     uploadFail:   'Upload failed',
-    deleted:      'Removed from gallery',
-    exported:     'Exported!',
-    imported:     'Import complete',
+    deleted:      'Hidden from gallery',
     loginTitle:   'Admin Panel',
     loginSub:     'Enter your credentials to continue',
     userLbl:      'Username',
@@ -121,6 +217,10 @@ const I18N = {
     logout:       'Logout',
     formTitle:    'Image Details',
     uploadedGallery: 'Uploaded Images',
+    loading:      'Loading gallery…',
+    loadError:    'Failed to load. Check Cloudinary settings.',
+    refresh:      'Refresh',
+    download:     'Download',
   },
 };
 
@@ -134,67 +234,74 @@ function applyLang(lang) {
   const isAr = lang === 'ar';
   document.documentElement.lang = lang;
   document.documentElement.dir  = isAr ? 'rtl' : 'ltr';
-
-  // Swap all data-i18n text nodes
   document.querySelectorAll('[data-i18n]').forEach(el => {
     const key = el.dataset.i18n;
-    if (el.dataset.i18nAttr) {
-      el.setAttribute(el.dataset.i18nAttr, t(key));
-    } else {
-      el.textContent = t(key);
-    }
+    if (el.dataset.i18nAttr) el.setAttribute(el.dataset.i18nAttr, t(key));
+    else el.textContent = t(key);
   });
-
-  // Update lang toggle button label
   const btn = document.getElementById('btn-lang');
   if (btn) btn.textContent = isAr ? 'EN' : 'ع';
 
-  // Re-render gallery to refresh dynamic text (filter chips etc.)
+  // Re-render gallery without re-fetching (use cached data)
   const isAdmin = !!document.getElementById('admin-dashboard');
   renderGallery({ isAdmin, showFilter: true });
 }
 
-/* ── 4. THEME ───────────────────────────────────────────────── */
+/* ── 5. THEME ───────────────────────────────────────────────── */
 function applyTheme(theme) {
   localStorage.setItem(CONFIG.THEME_KEY, theme);
-  if (theme === 'light') {
-    document.documentElement.classList.add('light');
-  } else {
-    document.documentElement.classList.remove('light');
-  }
+  document.documentElement.classList.toggle('light', theme === 'light');
   const btn = document.getElementById('btn-theme');
   if (btn) btn.textContent = theme === 'light' ? '🌙' : '☀️';
 }
-
 function toggleTheme() {
-  const current = localStorage.getItem(CONFIG.THEME_KEY) || 'dark';
-  applyTheme(current === 'dark' ? 'light' : 'dark');
+  applyTheme((localStorage.getItem(CONFIG.THEME_KEY) || 'dark') === 'dark' ? 'light' : 'dark');
 }
 
-/* ── 5. CATEGORY META ───────────────────────────────────────── */
+/* ── 6. CATEGORY META ───────────────────────────────────────── */
 const BUILT_IN = {
   logo:  { label:'Logo',  cls:'badge-logo'  },
   photo: { label:'Photo', cls:'badge-photo' },
 };
 function getCat(cat) { return BUILT_IN[cat] || { label: cat || 'Other', cls:'badge-other' }; }
 
-/* ── 6. GALLERY RENDER ──────────────────────────────────────── */
-let activeFilter = '';
+/* ── 7. GALLERY RENDER ──────────────────────────────────────── */
+let activeFilter  = '';
+let _cachedImages = null; // in-memory, used by applyLang re-render without refetch
 
-function renderGallery({ isAdmin = false, showFilter = true } = {}) {
+/**
+ * Fetches from Cloudinary and renders the gallery.
+ * @param {object} opts
+ * @param {boolean} opts.isAdmin
+ * @param {boolean} opts.showFilter
+ * @param {boolean} opts.force — bypass sessionStorage cache
+ */
+async function renderGallery({ isAdmin = false, showFilter = true, force = false } = {}) {
   const grid  = document.getElementById('gallery-grid');
   const empty = document.getElementById('empty-state');
   const count = document.getElementById('gallery-count');
   const clear = document.getElementById('btn-clear-all');
   if (!grid) return;
 
-  const all    = loadImages();
+  // Show loading
+  grid.innerHTML = `<div class="gallery-loading"><div class="gallery-spinner"></div><p>${t('loading')}</p></div>`;
+  if (empty) empty.style.display = 'none';
+
+  let all;
+  try {
+    all = await fetchGallery(force);
+    _cachedImages = all;
+  } catch (err) {
+    console.error(err);
+    grid.innerHTML = `<div class="gallery-loading error"><p>⚠ ${t('loadError')}</p></div>`;
+    return;
+  }
+
   const images = activeFilter ? all.filter(i => i.category === activeFilter) : all;
 
   if (count) count.textContent = all.length;
   if (clear) clear.hidden = all.length === 0;
 
-  // Update stats if in admin
   updateStats(all);
 
   grid.innerHTML = '';
@@ -215,26 +322,24 @@ function updateStats(all) {
   const sc = document.getElementById('stat-collections');
   const sk = document.getElementById('stat-cats');
   if (!sv) return;
-  const cols  = all.filter(i => i.type === 'collection').length;
-  const cats  = new Set(all.map(i => i.category)).size;
-  const imgs  = all.reduce((acc, i) =>
+  const cols = all.filter(i => i.type === 'collection').length;
+  const cats = new Set(all.map(i => i.category)).size;
+  const imgs = all.reduce((acc, i) =>
     acc + (i.type === 'collection' ? (i.images?.length || 0) : 1), 0);
   sv.textContent = imgs;
   sc.textContent = cols;
   sk.textContent = cats;
 }
 
-/* ── 7. CARD BUILDERS ───────────────────────────────────────── */
+/* ── 8. CARD BUILDERS ───────────────────────────────────────── */
 
 function buildSingleCard(rec, isAdmin) {
   const { url, name, category } = rec;
   const card = makeShell();
   const wrap = makeImgWrap();
   wrap.addEventListener('click', () => openLightbox([{ url }], 0));
-
-  const img = makeImg(url, name);
-  wrap.append(img, makeOverlay(), makeBadge(getCat(category)));
-  card.append(wrap, makeFooter(rec, isAdmin, () => openLightbox([{ url }], 0)));
+  wrap.append(makeImg(url, name), makeOverlay(), makeBadge(getCat(category)));
+  card.append(wrap, makeFooter(rec, isAdmin));
   return card;
 }
 
@@ -251,9 +356,9 @@ function buildCollectionCard(rec, isAdmin) {
   counter.className = 'slide-counter';
   counter.textContent = `${cur + 1} / ${images.length}`;
 
-  const bPrev = makeSliderArrow('prev', '‹');
-  const bNext = makeSliderArrow('next', '›');
-  const dots  = makeDots(images.length, cur);
+  const bPrev  = makeSliderArrow('prev', '‹');
+  const bNext  = makeSliderArrow('next', '›');
+  const dots   = makeDots(images.length, cur);
   const colBadge = document.createElement('span');
   colBadge.className = 'collection-badge';
   colBadge.textContent = `🎞 ${images.length}`;
@@ -271,7 +376,6 @@ function buildCollectionCard(rec, isAdmin) {
   dots.querySelectorAll('.slider-dot').forEach((d, i) =>
     d.addEventListener('click', e => { e.stopPropagation(); goTo(i); }));
 
-  // Click → collection lightbox starting at current slide
   wrap.addEventListener('click', () => openLightbox(images, cur));
 
   let auto = images.length > 1 ? setInterval(() => goTo(cur + 1), 3200) : null;
@@ -281,14 +385,14 @@ function buildCollectionCard(rec, isAdmin) {
   });
 
   wrap.append(img, makeOverlay(), makeBadge(getCat(category)), bPrev, bNext, dots, counter, colBadge);
-  card.append(wrap, makeFooter(rec, isAdmin, () => openLightbox(images, cur)));
+  card.append(wrap, makeFooter(rec, isAdmin));
   return card;
 }
 
-/* Card helpers */
+/* ── Card helpers ─── */
 function makeShell() {
   const c = document.createElement('article');
-  c.className = 'gallery-card'; c.setAttribute('role','listitem'); return c;
+  c.className = 'gallery-card'; c.setAttribute('role', 'listitem'); return c;
 }
 function makeImgWrap() { const d = document.createElement('div'); d.className = 'card-img-wrap'; return d; }
 function makeImg(url, alt) {
@@ -316,15 +420,16 @@ function makeDots(total, active) {
   for (let i = 0; i < total; i++) {
     const d = document.createElement('button');
     d.className = `slider-dot${i === active ? ' active' : ''}`;
-    d.setAttribute('aria-label', `الصورة ${i + 1}`);
+    d.setAttribute('aria-label', `${i + 1}`);
     wrap.appendChild(d);
   }
   return wrap;
 }
-function makeFooter(rec, isAdmin, onView) {
+
+function makeFooter(rec, isAdmin) {
   const { name } = rec;
-  const footer  = document.createElement('div'); footer.className = 'card-footer';
-  const nm      = document.createElement('div'); nm.className = 'card-name';
+  const footer = document.createElement('div'); footer.className = 'card-footer';
+  const nm     = document.createElement('div'); nm.className = 'card-name';
   nm.textContent = name || (currentLang === 'ar' ? 'بدون عنوان' : 'Untitled');
   nm.title = name || '';
 
@@ -346,13 +451,18 @@ function makeFooter(rec, isAdmin, onView) {
   acts.appendChild(btnWA);
 
   if (isAdmin) {
+    // Hide button (soft-delete)
     const bDel = document.createElement('button');
     bDel.className = 'btn btn-sm btn-danger';
     bDel.textContent = t('del');
     bDel.addEventListener('click', e => {
       e.stopPropagation();
       if (!confirm(`${t('del')} "${name}"?`)) return;
-      removeImage(rec);
+      // Collect all publicIds (single or collection images)
+      const ids = rec.type === 'collection'
+        ? rec.images.map(i => i.publicId).filter(Boolean)
+        : [rec.publicId].filter(Boolean);
+      hideImages(...ids);
       const card = bDel.closest('.gallery-card');
       if (card) { card.style.transition='opacity .22s,transform .22s'; card.style.opacity='0'; card.style.transform='scale(.95)'; }
       setTimeout(() => renderGallery({ isAdmin:true, showFilter:true }), 240);
@@ -364,14 +474,11 @@ function makeFooter(rec, isAdmin, onView) {
     const bDL = document.createElement('button');
     bDL.className = 'btn btn-sm btn-ghost';
     bDL.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
-    bDL.title = currentLang === 'ar' ? 'تحميل الصورة' : 'Download image';
-    bDL.setAttribute('aria-label', bDL.title);
+    bDL.title = t('download');
+    bDL.setAttribute('aria-label', t('download'));
     bDL.addEventListener('click', e => {
       e.stopPropagation();
-      // For collection cards the getUrl callback returns the current slide url
-      const url = rec.type === 'collection'
-        ? (rec._currentUrl || rec.images?.[0]?.url)
-        : rec.url;
+      const url = rec.type === 'collection' ? rec.images?.[0]?.url : rec.url;
       downloadImage(url, rec.name);
     });
     acts.appendChild(bDL);
@@ -381,11 +488,7 @@ function makeFooter(rec, isAdmin, onView) {
   return footer;
 }
 
-/* ── IMAGE DOWNLOAD ─────────────────────────────────────────── */
-/**
- * Fetches image as blob and triggers native browser download.
- * Falls back to opening in new tab if CORS blocks fetch.
- */
+/* ── IMAGE DOWNLOAD ──────────────────────────────────────────── */
 async function downloadImage(url, name) {
   if (!url) return;
   const filename = (name || 'image').replace(/[^a-zA-Z0-9\u0600-\u06FF\s_-]/g, '') || 'image';
@@ -399,12 +502,12 @@ async function downloadImage(url, name) {
     link.click();
     setTimeout(() => URL.revokeObjectURL(link.href), 3000);
   } catch {
-    // CORS fallback: open in new tab, user can save manually
     window.open(url, '_blank', 'noopener');
-    showToast(currentLang === 'ar' ? 'افتح باnew tab واضغط حفظ' : 'Right-click → Save image', '');
+    showToast(currentLang === 'ar' ? 'افتح الصورة واحفظها يدوياً' : 'Right-click → Save image', '');
   }
 }
 
+/* ── 9. FILTER BAR ──────────────────────────────────────────── */
 function renderFilterBar(all, isAdmin = false) {
   const bar = document.getElementById('filter-bar');
   if (!bar) return;
@@ -415,41 +518,32 @@ function renderFilterBar(all, isAdmin = false) {
   bar.innerHTML = '';
   chips.forEach(({ key, label }) => {
     const c = document.createElement('button');
-    c.className = `filter-chip${activeFilter===key?' active':''}`;
+    c.className = `filter-chip${activeFilter === key ? ' active' : ''}`;
     c.textContent = label;
     c.addEventListener('click', () => { activeFilter = key; renderGallery({ isAdmin, showFilter:true }); });
     bar.appendChild(c);
   });
 }
 
-/* ── 9. LIGHTBOX ────────────────────────────────────────────── */
-/** @type {Array<{url:string}>} current lightbox image list */
+/* ── 10. LIGHTBOX ───────────────────────────────────────────── */
 let lbImages = [];
 let lbIndex  = 0;
 
-/**
- * Opens lightbox.
- * @param {Array<{url:string}>} images
- * @param {number} startIdx
- */
 function openLightbox(images, startIdx = 0) {
-  lbImages = images;
-  lbIndex  = startIdx;
+  lbImages = images; lbIndex = startIdx;
   const lb      = document.getElementById('lightbox');
   const img     = document.getElementById('lightbox-img');
   const counter = document.getElementById('lb-counter');
   const bPrev   = document.getElementById('lb-prev');
   const bNext   = document.getElementById('lb-next');
   if (!lb || !img) return;
-
-  const isMulti = images.length > 1;
+  const multi = images.length > 1;
   img.src = images[lbIndex]?.url || '';
   lb.hidden = false;
   document.body.style.overflow = 'hidden';
-
-  if (counter) { counter.hidden = !isMulti; if (isMulti) counter.textContent = `${lbIndex + 1} / ${images.length}`; }
-  if (bPrev) bPrev.hidden = !isMulti;
-  if (bNext) bNext.hidden = !isMulti;
+  if (counter) { counter.hidden = !multi; if (multi) counter.textContent = `${lbIndex + 1} / ${images.length}`; }
+  if (bPrev) bPrev.hidden = !multi;
+  if (bNext) bNext.hidden = !multi;
 }
 
 function lbGoTo(idx) {
@@ -471,7 +565,7 @@ function closeLightbox() {
   document.body.style.overflow = '';
 }
 
-/* ── 10. TOAST ──────────────────────────────────────────────── */
+/* ── 11. TOAST ──────────────────────────────────────────────── */
 let _tt = null;
 function showToast(msg, type = '', duration = 3000) {
   const el = document.getElementById('toast');
@@ -482,43 +576,42 @@ function showToast(msg, type = '', duration = 3000) {
   if (duration > 0) _tt = setTimeout(() => el.classList.remove('show'), duration);
 }
 
-/* ── 11. WIRING ─────────────────────────────────────────────── */
+/* ── 12. HELPERS ────────────────────────────────────────────── */
+function svgPlaceholder() {
+  return `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='150'%3E%3Crect fill='%231c1c26' width='200' height='150'/%3E%3Ctext x='50%25' y='50%25' fill='%2352526a' font-size='12' text-anchor='middle' dy='.3em'%3EImage unavailable%3C/text%3E%3C/svg%3E`;
+}
+
+/* ── 13. WIRING ─────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', () => {
-  // Apply saved theme + lang
   applyTheme(localStorage.getItem(CONFIG.THEME_KEY) || 'dark');
   applyLang(localStorage.getItem(CONFIG.LANG_KEY) || 'ar');
 
-  // Theme toggle
   document.getElementById('btn-theme')?.addEventListener('click', toggleTheme);
-
-  // Lang toggle
   document.getElementById('btn-lang')?.addEventListener('click', () => {
     applyLang(currentLang === 'ar' ? 'en' : 'ar');
   });
 
-  // Lightbox events
-  const lb    = document.getElementById('lightbox');
-  const lbBtn = document.getElementById('lightbox-close');
-  const lbP   = document.getElementById('lb-prev');
-  const lbN   = document.getElementById('lb-next');
-
-  lbBtn?.addEventListener('click', closeLightbox);
+  // Lightbox
+  const lb  = document.getElementById('lightbox');
+  const lbB = document.getElementById('lightbox-close');
+  const lbP = document.getElementById('lb-prev');
+  const lbN = document.getElementById('lb-next');
+  lbB?.addEventListener('click', closeLightbox);
   lb?.addEventListener('click', e => { if (e.target === lb) closeLightbox(); });
   lbP?.addEventListener('click', e => { e.stopPropagation(); lbGoTo(lbIndex - 1); });
   lbN?.addEventListener('click', e => { e.stopPropagation(); lbGoTo(lbIndex + 1); });
-
   document.addEventListener('keydown', e => {
-    if (!document.getElementById('lightbox') || document.getElementById('lightbox').hidden) return;
+    if (!lb || lb.hidden) return;
     if (e.key === 'Escape')     closeLightbox();
     if (e.key === 'ArrowLeft')  lbGoTo(lbIndex - 1);
     if (e.key === 'ArrowRight') lbGoTo(lbIndex + 1);
   });
 });
 
-/* Export for admin.js */
 if (typeof window !== 'undefined') {
   window.GalleryApp = {
-    CONFIG, t, currentLang, loadImages, saveImages, addImage, removeImage,
-    renderGallery, showToast, openLightbox, closeLightbox, updateStats,
+    CONFIG, t, currentLang,
+    fetchGallery, invalidateCache, hideImages,
+    renderGallery, showToast, openLightbox, closeLightbox,
   };
 }
