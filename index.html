@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="A modern designer portfolio gallery with Cloudinary image upload." />
+  <title>Portfolio Gallery</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ===== HEADER ===== -->
+  <header class="site-header">
+    <div class="container header-inner">
+      <div class="logo">
+        <span class="logo-icon">◈</span>
+        <span class="logo-text">Portfolio</span>
+      </div>
+      <nav class="header-actions">
+        <!-- Export / Import for cross-device sync -->
+        <button id="btn-export" class="btn btn-ghost" title="Export gallery URLs as JSON">Export</button>
+        <button id="btn-import" class="btn btn-ghost" title="Import gallery URLs from JSON">Import</button>
+        <input type="file" id="import-file-input" accept=".json" hidden />
+      </nav>
+    </div>
+  </header>
+
+  <!-- ===== HERO / UPLOAD PANEL ===== -->
+  <section class="upload-section" id="upload-section">
+    <div class="container">
+      <div class="upload-card" id="drop-zone">
+
+        <!-- Drop zone visual -->
+        <div class="drop-icon" aria-hidden="true">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+
+        <h1 class="upload-title">Drop your images here</h1>
+        <p class="upload-subtitle">or click to browse — JPEG, PNG, WebP, GIF supported</p>
+
+        <!-- Hidden file input -->
+        <input
+          type="file"
+          id="file-input"
+          accept="image/*"
+          multiple
+          hidden
+          aria-label="Select images to upload"
+        />
+
+        <!-- Preview area (populated by JS) -->
+        <div class="preview-strip" id="preview-strip" role="list" aria-label="Selected images preview"></div>
+
+        <!-- Upload button + status -->
+        <div class="upload-controls">
+          <button class="btn btn-primary" id="btn-select">Browse Files</button>
+          <button class="btn btn-accent" id="btn-upload" disabled>
+            <span class="btn-text">Upload</span>
+            <span class="btn-spinner" aria-hidden="true"></span>
+          </button>
+        </div>
+
+        <!-- Status message -->
+        <p class="upload-status" id="upload-status" role="status" aria-live="polite"></p>
+
+        <!-- Progress bar -->
+        <div class="progress-bar-wrap" id="progress-wrap" hidden>
+          <div class="progress-bar" id="progress-bar"></div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== GALLERY ===== -->
+  <main class="gallery-section" id="gallery-section">
+    <div class="container">
+
+      <div class="gallery-header">
+        <h2 class="gallery-title">Gallery <span class="gallery-count" id="gallery-count">0</span></h2>
+        <button class="btn btn-ghost btn-sm" id="btn-clear-all" hidden>Clear All</button>
+      </div>
+
+      <!-- Empty state -->
+      <div class="empty-state" id="empty-state">
+        <p>Your uploaded images will appear here.</p>
+      </div>
+
+      <!-- Image grid -->
+      <div class="gallery-grid" id="gallery-grid" role="list" aria-label="Gallery images"></div>
+
+    </div>
+  </main>
+
+  <!-- ===== LIGHTBOX ===== -->
+  <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Image viewer" hidden>
+    <button class="lightbox-close" id="lightbox-close" aria-label="Close image viewer">✕</button>
+    <img class="lightbox-img" id="lightbox-img" src="" alt="Full size view" />
+  </div>
+
+  <!-- ===== TOAST NOTIFICATION ===== -->
+  <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
+
+  <!-- ===== FOOTER ===== -->
+  <footer class="site-footer">
+    <div class="container">
+      <p>Images stored on <a href="https://cloudinary.com" target="_blank" rel="noopener">Cloudinary</a> · Hosted on GitHub Pages</p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
