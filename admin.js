@@ -22,81 +22,56 @@ function doLogin() { localStorage.setItem(AUTH.STORAGE_KEY, '1'); }
 function doLogout() { localStorage.removeItem(AUTH.STORAGE_KEY); window.location.reload(); }
 function checkCred(u, p) { return u === AUTH.USERNAME && p === AUTH.PASSWORD; }
 
-/* ── 2. CLOUDINARY MANIFEST STORAGE ───────────────────────── */
+/* ── 2. STORAGE: Firebase Realtime DB ────────────────────── */
 /*
- * Architecture (No GitHub token needed):
- *   Images   → Cloudinary signed image upload
- *   Metadata → gallery_manifest.json as Cloudinary RAW resource
- *   Read URL → https://res.cloudinary.com/{cloud}/raw/upload/gallery_manifest.json
+ * Metadata is stored on Firebase Realtime Database (free, no auth in test mode).
+ * Images are stored on Cloudinary via the unsigned upload preset.
+ *
+ * SETUP (2 minutes, no token needed):
+ *   1. console.firebase.google.com → Add project → Continue → Continue → Create
+ *   2. Realtime Database → Create database → Start in TEST MODE → Enable
+ *   3. Copy the database URL and paste below
  */
-const CLOUD_KEY    = '721424188689927';
-const CLOUD_SECRET = 'UicHjL7W0vU91TPN8RsTW1bMnf8';
-const MANIFEST_ID  = 'gallery_manifest';
+// FB_URL is declared in app.js (loaded before admin.js in admin.html)
 
-/** SHA-1 via Web Crypto API */
-async function sha1(str) {
-  const buf = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
-}
-
-/** Read gallery manifest from Cloudinary (public raw file). Returns [] if missing. */
+/** Read gallery records from Firebase. Returns []. */
 async function readManifest() {
-  const url = `https://res.cloudinary.com/${CONFIG.CLOUDINARY_CLOUD_NAME}/raw/upload/${MANIFEST_ID}.json?t=${Date.now()}`;
   try {
-    const res = await fetch(url);
+    const res = await fetch(`${FB_URL}/gallery.json?t=${Date.now()}`);
     if (!res.ok) return [];
-    return await res.json();
+    const data = await res.json();
+    return data && typeof data === 'object' ? Object.values(data) : [];
   } catch { return []; }
 }
 
-/** Write updated manifest back to Cloudinary as a signed raw upload. */
-async function writeManifest(records) {
-  const endpoint = `https://api.cloudinary.com/v1_1/${CONFIG.CLOUDINARY_CLOUD_NAME}/raw/upload`;
-  const timestamp = Math.round(Date.now() / 1000);
-  const sigStr = `overwrite=true&public_id=${MANIFEST_ID}&timestamp=${timestamp}${CLOUD_SECRET}`;
-  const signature = await sha1(sigStr);
-
-  const blob = new Blob([JSON.stringify(records, null, 2)], { type: 'application/json' });
-  const form = new FormData();
-  form.append('file',      blob, `${MANIFEST_ID}.json`);
-  form.append('api_key',   CLOUD_KEY);
-  form.append('timestamp', timestamp);
-  form.append('signature', signature);
-  form.append('public_id', MANIFEST_ID);
-  form.append('overwrite', 'true');
-
-  const res = await fetch(endpoint, { method: 'POST', body: form });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Manifest write failed: ${res.status}`);
-  }
-}
-
-/** Append new record to manifest, then re-upload. */
+/** Append a new record to Firebase. */
 async function appendToManifest(rec) {
-  const existing = await readManifest();
-  await writeManifest([rec, ...existing]);
+  if (!FB_URL || FB_URL.startsWith('PASTE')) {
+    throw new Error('أضف Firebase URL في admin.js سطر 36');
+  }
+  const res = await fetch(`${FB_URL}/gallery.json`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rec),
+  });
+  if (!res.ok) throw new Error(`Firebase write failed: ${res.status}`);
   invalidateCache();
 }
 
-/** Upload one image to Cloudinary (signed). Returns { url, publicId, name, category }. */
+/** Upload one image to Cloudinary via UNSIGNED preset. Returns { url, publicId }. */
 async function uploadToCloudinary(file, name, category, extra = {}) {
-  const endpoint = `https://api.cloudinary.com/v1_1/${CONFIG.CLOUDINARY_CLOUD_NAME}/image/upload`;
+  const { CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET } = CONFIG;
+  const endpoint = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
   const safeName = name.replace(/[|=]/g, ' ').trim() || file.name;
 
   let ctx = `caption=${safeName}|alt=${category}`;
   if (extra.colId) ctx += `|type=collection|col=${extra.colId}|seq=${extra.seq ?? 0}`;
-  else             ctx += `|type=single`;
-
-  const timestamp = Math.round(Date.now() / 1000);
-  const signature = await sha1(`context=${ctx}&timestamp=${timestamp}${CLOUD_SECRET}`);
+  else ctx += `|type=single`;
 
   const form = new FormData();
-  form.append('file',      file);
-  form.append('api_key',   CLOUD_KEY);
-  form.append('timestamp', timestamp);
-  form.append('signature', signature);
-  form.append('context',   ctx);
+  form.append('file', file);
+  form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  form.append('context', ctx);
 
   const res = await fetch(endpoint, { method: 'POST', body: form });
   if (!res.ok) {

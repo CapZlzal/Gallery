@@ -22,9 +22,10 @@ const CONFIG = {
   THEME_KEY: 'hg_theme',
 };
 
-/* ── 2. CLOUDINARY MANIFEST FETCH ───────────────────────────── */
+/* ── 2. FIREBASE GALLERY FETCH ──────────────────────────────── */
 
-const MANIFEST_URL = `https://res.cloudinary.com/${CONFIG.CLOUDINARY_CLOUD_NAME}/raw/upload/gallery_manifest.json`;
+// Must match FB_URL in admin.js
+const FB_URL = 'https://gallery-bbfa9-default-rtdb.firebaseio.com';
 
 async function fetchGallery(force = false) {
   if (!force) {
@@ -37,14 +38,17 @@ async function fetchGallery(force = false) {
     } catch { /* continue */ }
   }
 
-  const res = await fetch(`${MANIFEST_URL}?t=${Date.now()}`);
-  if (!res.ok) return [];   // manifest doesn't exist yet → empty gallery
-  const data = await res.json();
-  const sorted = Array.isArray(data)
-    ? data.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt))
+  if (!FB_URL || FB_URL.startsWith('PASTE')) return [];
+
+  const res = await fetch(`${FB_URL}/gallery.json?t=${Date.now()}`);
+  if (!res.ok) throw new Error(`Firebase read failed: ${res.status}`);
+  const raw = await res.json();
+  // Firebase stores as object {key: record} — convert to sorted array
+  const data = (raw && typeof raw === 'object' && !Array.isArray(raw))
+    ? Object.values(raw).sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt))
     : [];
-  try { sessionStorage.setItem(CONFIG.CACHE_KEY, JSON.stringify({ ts: Date.now(), data: sorted })); } catch { }
-  return sorted;
+  try { sessionStorage.setItem(CONFIG.CACHE_KEY, JSON.stringify({ ts: Date.now(), data })); } catch { }
+  return data;
 }
 
 function invalidateCache() { sessionStorage.removeItem(CONFIG.CACHE_KEY); }
