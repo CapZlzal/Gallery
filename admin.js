@@ -22,61 +22,81 @@ function doLogin() { localStorage.setItem(AUTH.STORAGE_KEY, '1'); }
 function doLogout() { localStorage.removeItem(AUTH.STORAGE_KEY); window.location.reload(); }
 function checkCred(u, p) { return u === AUTH.USERNAME && p === AUTH.PASSWORD; }
 
-/* ── 2. UPLOAD ENGINE ─────────────────────────────────────── */
-
+/* ── 2. CLOUDINARY MANIFEST STORAGE ───────────────────────── */
 /*
- * Cloudinary credentials for SIGNED uploads.
- * Signed uploads are NOT restricted by upload preset — tags and context
- * are always applied server-side, so the list endpoint always works.
- * Get these from: Cloudinary Dashboard → API Keys
+ * Architecture (No GitHub token needed):
+ *   Images   → Cloudinary signed image upload
+ *   Metadata → gallery_manifest.json as Cloudinary RAW resource
+ *   Read URL → https://res.cloudinary.com/{cloud}/raw/upload/gallery_manifest.json
  */
-const CLOUD_KEY = '721424188689927';      // e.g. 123456789012345
-const CLOUD_SECRET = 'UicHjL7W0vU91TPN8RsTW1bMnf8';   // e.g. abCdEfGhIjKlMnOpQrStUvWxYz
+const CLOUD_KEY    = '721424188689927';
+const CLOUD_SECRET = 'UicHjL7W0vU91TPN8RsTW1bMnf8';
+const MANIFEST_ID  = 'gallery_manifest';
 
-/** SHA-1 digest using Web Crypto API (needed to sign Cloudinary requests). */
+/** SHA-1 via Web Crypto API */
 async function sha1(str) {
   const buf = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
 }
 
-/**
- * Uploads one file to Cloudinary using a SIGNED request.
- * Tags and context are guaranteed to be stored by Cloudinary.
- */
-async function uploadToCloudinary(file, name, category, extra = {}) {
-  const { CLOUDINARY_CLOUD_NAME, GALLERY_TAG } = CONFIG;
-  const endpoint = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
+/** Read gallery manifest from Cloudinary (public raw file). Returns [] if missing. */
+async function readManifest() {
+  const url = `https://res.cloudinary.com/${CONFIG.CLOUDINARY_CLOUD_NAME}/raw/upload/${MANIFEST_ID}.json?t=${Date.now()}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch { return []; }
+}
 
-  if (!CLOUD_KEY || CLOUD_KEY.startsWith('PASTE')) {
-    throw new Error('أضف CLOUD_KEY و CLOUD_SECRET في admin.js');
+/** Write updated manifest back to Cloudinary as a signed raw upload. */
+async function writeManifest(records) {
+  const endpoint = `https://api.cloudinary.com/v1_1/${CONFIG.CLOUDINARY_CLOUD_NAME}/raw/upload`;
+  const timestamp = Math.round(Date.now() / 1000);
+  const sigStr = `overwrite=true&public_id=${MANIFEST_ID}&timestamp=${timestamp}${CLOUD_SECRET}`;
+  const signature = await sha1(sigStr);
+
+  const blob = new Blob([JSON.stringify(records, null, 2)], { type: 'application/json' });
+  const form = new FormData();
+  form.append('file',      blob, `${MANIFEST_ID}.json`);
+  form.append('api_key',   CLOUD_KEY);
+  form.append('timestamp', timestamp);
+  form.append('signature', signature);
+  form.append('public_id', MANIFEST_ID);
+  form.append('overwrite', 'true');
+
+  const res = await fetch(endpoint, { method: 'POST', body: form });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Manifest write failed: ${res.status}`);
   }
+}
 
+/** Append new record to manifest, then re-upload. */
+async function appendToManifest(rec) {
+  const existing = await readManifest();
+  await writeManifest([rec, ...existing]);
+  invalidateCache();
+}
+
+/** Upload one image to Cloudinary (signed). Returns { url, publicId, name, category }. */
+async function uploadToCloudinary(file, name, category, extra = {}) {
+  const endpoint = `https://api.cloudinary.com/v1_1/${CONFIG.CLOUDINARY_CLOUD_NAME}/image/upload`;
   const safeName = name.replace(/[|=]/g, ' ').trim() || file.name;
 
   let ctx = `caption=${safeName}|alt=${category}`;
-  if (extra.colId) {
-    ctx += `|type=collection|col=${extra.colId}|seq=${extra.seq ?? 0}`;
-  } else {
-    ctx += `|type=single`;
-  }
-
-  const tags = [GALLERY_TAG, category];
-  if (extra.colId) tags.push(extra.colId);
-  const tagsStr = tags.join(',');
+  if (extra.colId) ctx += `|type=collection|col=${extra.colId}|seq=${extra.seq ?? 0}`;
+  else             ctx += `|type=single`;
 
   const timestamp = Math.round(Date.now() / 1000);
-
-  // Params to sign — sorted alphabetically, no api_key/file/resource_type/cloud_name
-  const sigParams = `context=${ctx}&tags=${tagsStr}&timestamp=${timestamp}${CLOUD_SECRET}`;
-  const signature = await sha1(sigParams);
+  const signature = await sha1(`context=${ctx}&timestamp=${timestamp}${CLOUD_SECRET}`);
 
   const form = new FormData();
-  form.append('file', file);
-  form.append('api_key', CLOUD_KEY);
+  form.append('file',      file);
+  form.append('api_key',   CLOUD_KEY);
   form.append('timestamp', timestamp);
   form.append('signature', signature);
-  form.append('context', ctx);
-  form.append('tags', tagsStr);
+  form.append('context',   ctx);
 
   const res = await fetch(endpoint, { method: 'POST', body: form });
   if (!res.ok) {
@@ -183,13 +203,15 @@ async function handleUpload() {
   const isCollection = total > 1;
   const colId = isCollection ? `hg_col_${Date.now()}` : null;
   let done = 0, failed = 0;
+  const uploadedImages = [];
 
   for (const file of pendingFiles) {
     setStatus(`${t('uploading')} ${done + 1} ${t('of')} ${total}: ${file.name}`, '');
     const extra = colId ? { colId, seq: done } : {};
 
     try {
-      await uploadToCloudinary(file, name, category, extra);
+      const result = await uploadToCloudinary(file, name, category, extra);
+      uploadedImages.push(result);
       done++;
       setProgress((done / total) * 100);
     } catch (err) {
@@ -198,7 +220,21 @@ async function handleUpload() {
     }
   }
 
-  invalidateCache();
+  // Save metadata to Cloudinary manifest
+  if (uploadedImages.length > 0) {
+    try {
+      setStatus(currentLang === 'ar' ? 'جاري الحفظ…' : 'Saving…', '');
+      const rec = isCollection
+        ? { type: 'collection', name, category, images: uploadedImages, uploadedAt: new Date().toISOString() }
+        : { type: 'single', name, category, url: uploadedImages[0].url, publicId: uploadedImages[0].publicId, uploadedAt: new Date().toISOString() };
+      await appendToManifest(rec);
+    } catch (err) {
+      console.error('Manifest write failed:', err);
+      showToast(`فشل الحفظ: ${err.message}`, 'error');
+    }
+  } else {
+    invalidateCache();
+  }
 
   btnUpload?.classList.remove('loading');
   if (btnUpload) btnUpload.disabled = false;

@@ -22,7 +22,9 @@ const CONFIG = {
   THEME_KEY: 'hg_theme',
 };
 
-/* ── 2. CLOUDINARY FETCH ────────────────────────────────────── */
+/* ── 2. CLOUDINARY MANIFEST FETCH ───────────────────────────── */
+
+const MANIFEST_URL = `https://res.cloudinary.com/${CONFIG.CLOUDINARY_CLOUD_NAME}/raw/upload/gallery_manifest.json`;
 
 async function fetchGallery(force = false) {
   if (!force) {
@@ -35,53 +37,14 @@ async function fetchGallery(force = false) {
     } catch { /* continue */ }
   }
 
-  const url = `https://res.cloudinary.com/${CONFIG.CLOUDINARY_CLOUD_NAME}/image/list/${CONFIG.GALLERY_TAG}.json`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    if (res.status === 404) return [];
-    throw new Error(`Cloudinary list failed: ${res.status}`);
-  }
-  const json = await res.json();
-  const data = parseResources(json.resources || []);
-  try { sessionStorage.setItem(CONFIG.CACHE_KEY, JSON.stringify({ ts: Date.now(), data })); } catch { }
-  return data;
-}
-
-/** Constructs Cloudinary CDN URL from list-endpoint fields (no secure_url in list response). */
-function buildCloudinaryUrl(r) {
-  const v = r.version ? `v${r.version}/` : '';
-  return `https://res.cloudinary.com/${CONFIG.CLOUDINARY_CLOUD_NAME}/image/upload/${v}${r.public_id}.${r.format || 'jpg'}`;
-}
-
-function parseResources(resources) {
-  const singles = [];
-  const colMap = {};
-
-  resources.forEach(r => {
-    const ctx = r.context?.custom || {};
-    const name = ctx.caption || r.public_id.split('/').pop();
-    const category = ctx.alt || 'other';
-    const type = ctx.type || 'single';
-    const url = r.secure_url || buildCloudinaryUrl(r);
-    const publicId = r.public_id;
-    const uploadedAt = r.created_at || new Date().toISOString();
-
-    if (type === 'collection') {
-      const colId = ctx.col || publicId;
-      const seq = parseInt(ctx.seq) || 0;
-      if (!colMap[colId]) colMap[colId] = { name, category, uploadedAt, images: [] };
-      colMap[colId].images.push({ url, publicId, seq });
-    } else {
-      singles.push({ type: 'single', url, name, category, publicId, uploadedAt });
-    }
-  });
-
-  const collections = Object.values(colMap).map(col => ({
-    type: 'collection', name: col.name, category: col.category, uploadedAt: col.uploadedAt,
-    images: col.images.sort((a, b) => a.seq - b.seq).map(i => ({ url: i.url, publicId: i.publicId })),
-  }));
-
-  return [...singles, ...collections].sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+  const res = await fetch(`${MANIFEST_URL}?t=${Date.now()}`);
+  if (!res.ok) return [];   // manifest doesn't exist yet → empty gallery
+  const data = await res.json();
+  const sorted = Array.isArray(data)
+    ? data.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt))
+    : [];
+  try { sessionStorage.setItem(CONFIG.CACHE_KEY, JSON.stringify({ ts: Date.now(), data: sorted })); } catch { }
+  return sorted;
 }
 
 function invalidateCache() { sessionStorage.removeItem(CONFIG.CACHE_KEY); }
