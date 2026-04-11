@@ -43,9 +43,11 @@ async function fetchGallery(force = false) {
   const res = await fetch(`${FB_URL}/gallery.json?t=${Date.now()}`);
   if (!res.ok) throw new Error(`Firebase read failed: ${res.status}`);
   const raw = await res.json();
-  // Firebase stores as object {key: record} — convert to sorted array
+  // Firebase returns {key: record} — preserve the key for delete/rename
   const data = (raw && typeof raw === 'object' && !Array.isArray(raw))
-    ? Object.values(raw).sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt))
+    ? Object.entries(raw)
+        .map(([_fbKey, rec]) => ({ ...rec, _fbKey }))
+        .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt))
     : [];
   try { sessionStorage.setItem(CONFIG.CACHE_KEY, JSON.stringify({ ts: Date.now(), data })); } catch { }
   return data;
@@ -72,6 +74,8 @@ const I18N = {
     formTitle: 'تفاصيل الصورة', uploadedGallery: 'الصور المرفوعة',
     loading: 'جاري تحميل الصور…', loadError: 'تعذّر التحميل. تحقق من Cloudinary.',
     refresh: 'تحديث', download: 'تحميل',
+    delete: 'حذف', rename: 'تعديل الاسم', renamePrompt: 'الاسم الجديد:',
+    confirmDelete: 'هل تريد حذف هذه الصورة؟',
   },
   en: {
     siteTitle: 'Hazem Gallery', galleryTitle: 'Our Work', filterAll: 'All',
@@ -90,6 +94,8 @@ const I18N = {
     formTitle: 'Image Details', uploadedGallery: 'Uploaded Images',
     loading: 'Loading gallery…', loadError: 'Failed to load. Check Cloudinary settings.',
     refresh: 'Refresh', download: 'Download',
+    delete: 'Delete', rename: 'Rename', renamePrompt: 'New name:',
+    confirmDelete: 'Delete this image?',
   },
 };
 
@@ -193,6 +199,18 @@ function updateStats(all) {
 
 /* ── 7. CARD BUILDERS ───────────────────────────────────────── */
 
+/** Convert a display name to a URL-safe slug for deep linking. */
+function makeSlug(name, publicId) {
+  if (!name && !publicId) return 'item';
+  return (name || publicId)
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9\-\u0600-\u06FF]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    || (publicId?.split('/').pop()) || 'item';
+}
+
 function buildSingleCard(rec, isAdmin) {
   const slug = makeSlug(rec.name, rec.publicId);
   const card = makeShell();
@@ -280,6 +298,18 @@ function makeFooter(rec, isAdmin) {
   btnWA.addEventListener('click', e => { e.stopPropagation(); window.open(`https://wa.me/${CONFIG.WHATSAPP_NUM}?text=${waMsg}`, '_blank', 'noopener'); });
   acts.appendChild(btnWA);
 
+  // Copy direct link — visible to everyone
+  const slug = rec._slug || makeSlug(rec.name, rec.publicId);
+  const bLink = document.createElement('button'); bLink.className = 'btn btn-sm btn-ghost';
+  bLink.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`;
+  bLink.title = currentLang === 'ar' ? 'نسخ الرابط' : 'Copy link';
+  bLink.addEventListener('click', e => {
+    e.stopPropagation();
+    const url = `${location.origin}${location.pathname}#${slug}`;
+    navigator.clipboard.writeText(url).then(() => showToast(currentLang === 'ar' ? '✓ تم نسخ الرابط' : '✓ Link copied'));
+  });
+  acts.appendChild(bLink);
+
   // Download — admin only, no delete
   if (isAdmin) {
     const bDL = document.createElement('button'); bDL.className = 'btn btn-sm btn-ghost';
@@ -287,10 +317,58 @@ function makeFooter(rec, isAdmin) {
     bDL.title = t('download'); bDL.setAttribute('aria-label', t('download'));
     bDL.addEventListener('click', e => { e.stopPropagation(); downloadImage(rec.type === 'collection' ? rec.images?.[0]?.url : rec.url, rec.name); });
     acts.appendChild(bDL);
+
+    // Rename button
+    const bRN = document.createElement('button'); bRN.className = 'btn btn-sm btn-ghost';
+    bRN.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+    bRN.title = t('rename'); bRN.setAttribute('aria-label', t('rename'));
+    bRN.addEventListener('click', async e => {
+      e.stopPropagation();
+      const newName = prompt(t('renamePrompt'), rec.name || '');
+      if (!newName || newName.trim() === rec.name) return;
+      await renameRecord(rec._fbKey, newName.trim());
+    });
+    acts.appendChild(bRN);
+
+    // Delete button
+    const bDel = document.createElement('button'); bDel.className = 'btn btn-sm btn-danger';
+    bDel.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>`;
+    bDel.title = t('delete'); bDel.setAttribute('aria-label', t('delete'));
+    bDel.addEventListener('click', async e => {
+      e.stopPropagation();
+      if (!confirm(t('confirmDelete'))) return;
+      await deleteRecord(rec._fbKey);
+    });
+    acts.appendChild(bDel);
   }
 
   footer.append(nm, acts);
   return footer;
+}
+
+/* ── FIREBASE DELETE / RENAME ────────────────────────────────── */
+async function deleteRecord(fbKey) {
+  if (!fbKey) return;
+  try {
+    await fetch(`${FB_URL}/gallery/${fbKey}.json`, { method: 'DELETE' });
+    invalidateCache();
+    showToast(t('delete') + ' ✓', 'success');
+    renderGallery({ isAdmin: typeof isAuthed === 'function' && isAuthed(), showFilter: true, force: true });
+  } catch (err) { showToast('فشل الحذف', 'error'); console.error(err); }
+}
+
+async function renameRecord(fbKey, newName) {
+  if (!fbKey || !newName) return;
+  try {
+    await fetch(`${FB_URL}/gallery/${fbKey}.json`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName }),
+    });
+    invalidateCache();
+    showToast(t('rename') + ' ✓', 'success');
+    renderGallery({ isAdmin: typeof isAuthed === 'function' && isAuthed(), showFilter: true, force: true });
+  } catch (err) { showToast('فشل التعديل', 'error'); console.error(err); }
 }
 
 /* ── IMAGE DOWNLOAD ──────────────────────────────────────────── */
