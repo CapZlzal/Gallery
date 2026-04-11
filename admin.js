@@ -12,35 +12,47 @@
 /* ── 1. AUTH ──────────────────────────────────────────────── */
 
 const AUTH = {
-  USERNAME:    'korata',
-  PASSWORD:    'korata1250',
+  USERNAME: 'korata',
+  PASSWORD: 'korata1250',
   STORAGE_KEY: 'admin_authed',
 };
 
-function isAuthed()      { return localStorage.getItem(AUTH.STORAGE_KEY) === '1'; }
-function doLogin()       { localStorage.setItem(AUTH.STORAGE_KEY, '1'); }
-function doLogout()      { localStorage.removeItem(AUTH.STORAGE_KEY); window.location.reload(); }
+function isAuthed() { return localStorage.getItem(AUTH.STORAGE_KEY) === '1'; }
+function doLogin() { localStorage.setItem(AUTH.STORAGE_KEY, '1'); }
+function doLogout() { localStorage.removeItem(AUTH.STORAGE_KEY); window.location.reload(); }
 function checkCred(u, p) { return u === AUTH.USERNAME && p === AUTH.PASSWORD; }
 
 /* ── 2. UPLOAD ENGINE ─────────────────────────────────────── */
 
+/*
+ * Cloudinary credentials for SIGNED uploads.
+ * Signed uploads are NOT restricted by upload preset — tags and context
+ * are always applied server-side, so the list endpoint always works.
+ * Get these from: Cloudinary Dashboard → API Keys
+ */
+const CLOUD_KEY = '721424188689927';      // e.g. 123456789012345
+const CLOUD_SECRET = 'UicHjL7W0vU91TPN8RsTW1bMnf8';   // e.g. abCdEfGhIjKlMnOpQrStUvWxYz
+
+/** SHA-1 digest using Web Crypto API (needed to sign Cloudinary requests). */
+async function sha1(str) {
+  const buf = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 /**
- * Uploads one file to Cloudinary.
- * Encodes ALL metadata in context + tags so the public list endpoint
- * returns them on every device without any backend.
- *
- * @param {File}   file
- * @param {string} name      display name
- * @param {string} category  slug
- * @param {object} [extra]   { colId, seq } for collection images
+ * Uploads one file to Cloudinary using a SIGNED request.
+ * Tags and context are guaranteed to be stored by Cloudinary.
  */
 async function uploadToCloudinary(file, name, category, extra = {}) {
-  const { CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET, GALLERY_TAG } = CONFIG;
+  const { CLOUDINARY_CLOUD_NAME, GALLERY_TAG } = CONFIG;
   const endpoint = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
+
+  if (!CLOUD_KEY || CLOUD_KEY.startsWith('PASTE')) {
+    throw new Error('أضف CLOUD_KEY و CLOUD_SECRET في admin.js');
+  }
 
   const safeName = name.replace(/[|=]/g, ' ').trim() || file.name;
 
-  // Context fields — returned by the public list endpoint
   let ctx = `caption=${safeName}|alt=${category}`;
   if (extra.colId) {
     ctx += `|type=collection|col=${extra.colId}|seq=${extra.seq ?? 0}`;
@@ -48,15 +60,23 @@ async function uploadToCloudinary(file, name, category, extra = {}) {
     ctx += `|type=single`;
   }
 
-  // Tags: master gallery tag + category + optional collection id
   const tags = [GALLERY_TAG, category];
   if (extra.colId) tags.push(extra.colId);
+  const tagsStr = tags.join(',');
+
+  const timestamp = Math.round(Date.now() / 1000);
+
+  // Params to sign — sorted alphabetically, no api_key/file/resource_type/cloud_name
+  const sigParams = `context=${ctx}&tags=${tagsStr}&timestamp=${timestamp}${CLOUD_SECRET}`;
+  const signature = await sha1(sigParams);
 
   const form = new FormData();
-  form.append('file',          file);
-  form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-  form.append('context',       ctx);
-  form.append('tags',          tags.join(','));
+  form.append('file', file);
+  form.append('api_key', CLOUD_KEY);
+  form.append('timestamp', timestamp);
+  form.append('signature', signature);
+  form.append('context', ctx);
+  form.append('tags', tagsStr);
 
   const res = await fetch(endpoint, { method: 'POST', body: form });
   if (!res.ok) {
@@ -78,7 +98,7 @@ function setStatus(msg, type = '') {
 
 function setProgress(pct) {
   const wrap = document.getElementById('progress-wrap');
-  const bar  = document.getElementById('progress-bar');
+  const bar = document.getElementById('progress-bar');
   if (!wrap || !bar) return;
   if (pct === 0) { wrap.hidden = true; bar.style.width = '0%'; return; }
   wrap.hidden = false;
@@ -90,7 +110,7 @@ function setProgress(pct) {
 let pendingFiles = [];
 
 function renderPreview() {
-  const strip     = document.getElementById('preview-strip');
+  const strip = document.getElementById('preview-strip');
   const uploadBtn = document.getElementById('btn-upload');
   if (!strip) return;
 
@@ -101,8 +121,8 @@ function renderPreview() {
     thumb.setAttribute('role', 'listitem');
 
     const img = document.createElement('img');
-    img.src   = URL.createObjectURL(file);
-    img.alt   = file.name;
+    img.src = URL.createObjectURL(file);
+    img.alt = file.name;
 
     const rm = document.createElement('button');
     rm.className = 'remove-preview';
@@ -150,7 +170,7 @@ async function handleUpload() {
     return;
   }
 
-  const category  = resolveCategory();
+  const category = resolveCategory();
   const btnUpload = document.getElementById('btn-upload');
   const btnSelect = document.getElementById('btn-select');
 
@@ -159,7 +179,7 @@ async function handleUpload() {
   if (btnSelect) btnSelect.disabled = true;
   setProgress(0);
 
-  const total        = pendingFiles.length;
+  const total = pendingFiles.length;
   const isCollection = total > 1;
   const colId = isCollection ? `hg_col_${Date.now()}` : null;
   let done = 0, failed = 0;
@@ -183,8 +203,8 @@ async function handleUpload() {
   btnUpload?.classList.remove('loading');
   if (btnUpload) btnUpload.disabled = false;
   if (btnSelect) btnSelect.disabled = false;
-  document.getElementById('file-input').value     = '';
-  document.getElementById('inp-img-name').value   = '';
+  document.getElementById('file-input').value = '';
+  document.getElementById('inp-img-name').value = '';
   document.getElementById('inp-custom-cat').value = '';
   pendingFiles = [];
   renderPreview();
@@ -223,7 +243,7 @@ function addDragHandlers(zone) {
 document.addEventListener('DOMContentLoaded', () => {
 
   const loginOverlay = document.getElementById('login-overlay');
-  const adminDash    = document.getElementById('admin-dashboard');
+  const adminDash = document.getElementById('admin-dashboard');
 
   if (isAuthed()) {
     loginOverlay.hidden = true;
@@ -236,9 +256,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('login-form')?.addEventListener('submit', e => {
     e.preventDefault();
-    const u      = document.getElementById('inp-username').value.trim();
-    const p      = document.getElementById('inp-password').value;
-    const errEl  = document.getElementById('login-error');
+    const u = document.getElementById('inp-username').value.trim();
+    const p = document.getElementById('inp-password').value;
+    const errEl = document.getElementById('login-error');
     const btnLog = document.getElementById('btn-login');
 
     errEl.textContent = '';
@@ -265,9 +285,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (confirm(currentLang === 'ar' ? 'تسجيل الخروج؟' : 'Logout?')) doLogout();
   });
 
-  const catSelect     = document.getElementById('inp-category');
+  const catSelect = document.getElementById('inp-category');
   const customCatWrap = document.getElementById('custom-cat-wrap');
-  const customCatInp  = document.getElementById('inp-custom-cat');
+  const customCatInp = document.getElementById('inp-custom-cat');
 
   catSelect?.addEventListener('change', () => {
     const show = catSelect.value === 'other';
@@ -278,7 +298,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const fileInput = document.getElementById('file-input');
   const btnSelect = document.getElementById('btn-select');
-  const dropZone  = document.getElementById('drop-zone');
+  const dropZone = document.getElementById('drop-zone');
 
   btnSelect?.addEventListener('click', e => { e.stopPropagation(); fileInput.click(); });
 
