@@ -17,6 +17,7 @@ const CONFIG = {
   HIDDEN_KEY: 'hg_hidden',
   CACHE_KEY: 'hg_cache',
   CACHE_TTL_MS: 0, // Disable cache to show live updates correctly across devices
+  PAGE_SIZE: 20,
   WHATSAPP_NUM: '201099160942',
   LANG_KEY: 'hg_lang',
   THEME_KEY: 'hg_theme',
@@ -76,6 +77,7 @@ const I18N = {
     refresh: 'تحديث', download: 'تحميل',
     delete: 'حذف', rename: 'تعديل الاسم', renamePrompt: 'الاسم الجديد:',
     confirmDelete: 'هل تريد حذف هذه الصورة؟',
+    loadMore: 'تحميل المزيد', noMore: 'لا يوجد المزيد',
   },
   en: {
     siteTitle: 'Hazem Gallery', galleryTitle: 'Our Work', filterAll: 'All',
@@ -96,6 +98,7 @@ const I18N = {
     refresh: 'Refresh', download: 'Download',
     delete: 'Delete', rename: 'Rename', renamePrompt: 'New name:',
     confirmDelete: 'Delete this image?',
+    loadMore: 'Load More', noMore: 'No more items',
   },
 };
 
@@ -145,6 +148,7 @@ function makeSlug(name, publicId) {
 
 /* ── 6. GALLERY RENDER ──────────────────────────────────────── */
 let activeFilter = '';
+let currentPage = 1;
 
 async function renderGallery({ isAdmin = false, showFilter = true, force = false } = {}) {
   const grid = document.getElementById('gallery-grid');
@@ -171,9 +175,18 @@ async function renderGallery({ isAdmin = false, showFilter = true, force = false
   grid.innerHTML = '';
   if (!images.length) { if (empty) empty.style.display = ''; return; }
   if (empty) empty.style.display = 'none';
-  images.forEach(rec => grid.appendChild(
+
+  // Slice for pagination
+  const start = (currentPage - 1) * CONFIG.PAGE_SIZE;
+  const paged = images.slice(start, start + CONFIG.PAGE_SIZE);
+  
+  paged.forEach(rec => grid.appendChild(
     rec.type === 'collection' ? buildCollectionCard(rec, isAdmin) : buildSingleCard(rec, isAdmin)
   ));
+
+  // Pagination UI
+  renderPagination(images.length, isAdmin);
+
   if (showFilter) renderFilterBar(all, isAdmin);
 
   // Deep link: if URL has #slug, open that card's lightbox
@@ -394,9 +407,64 @@ function renderFilterBar(all, isAdmin = false) {
     const c = document.createElement('button');
     c.className = `filter-chip${activeFilter === key ? ' active' : ''}`;
     c.textContent = label;
-    c.addEventListener('click', () => { activeFilter = key; renderGallery({ isAdmin, showFilter: true }); });
+    c.addEventListener('click', () => {
+      activeFilter = key;
+      currentPage = 1; // Reset to page 1 on filter change
+      renderGallery({ isAdmin, showFilter: true });
+    });
     bar.appendChild(c);
   });
+}
+
+/* ── 9. PAGINATION (Numbered) ────────────────────────────────── */
+function renderPagination(total, isAdmin) {
+  let wrap = document.getElementById('pagination-wrap');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.id = 'pagination-wrap';
+    wrap.className = 'pagination-wrap';
+    document.getElementById('gallery-grid').after(wrap);
+  }
+  wrap.innerHTML = '';
+
+  const totalPages = Math.ceil(total / CONFIG.PAGE_SIZE);
+  if (totalPages <= 1) return;
+
+  const nav = document.createElement('div');
+  nav.className = 'page-nav';
+
+  // Prev
+  const btnPrev = document.createElement('button');
+  btnPrev.className = `page-btn${currentPage === 1 ? ' disabled' : ''}`;
+  btnPrev.innerHTML = '&#8249;';
+  btnPrev.disabled = currentPage === 1;
+  btnPrev.onclick = () => { if (currentPage > 1) goToPage(currentPage - 1, isAdmin); };
+  nav.appendChild(btnPrev);
+
+  // Page numbers
+  for (let i = 1; i <= totalPages; i++) {
+    const btn = document.createElement('button');
+    btn.className = `page-btn${currentPage === i ? ' active' : ''}`;
+    btn.textContent = i;
+    btn.onclick = () => goToPage(i, isAdmin);
+    nav.appendChild(btn);
+  }
+
+  // Next
+  const btnNext = document.createElement('button');
+  btnNext.className = `page-btn${currentPage === totalPages ? ' disabled' : ''}`;
+  btnNext.innerHTML = '&#8250;';
+  btnNext.disabled = currentPage === totalPages;
+  btnNext.onclick = () => { if (currentPage < totalPages) goToPage(currentPage + 1, isAdmin); };
+  nav.appendChild(btnNext);
+
+  wrap.appendChild(nav);
+}
+
+function goToPage(p, isAdmin) {
+  currentPage = p;
+  renderGallery({ isAdmin, showFilter: true });
+  window.scrollTo({ top: document.getElementById('gallery-grid').offsetTop - 120, behavior: 'smooth' });
 }
 
 /* ── 9. LIGHTBOX ────────────────────────────────────────────── */
