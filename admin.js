@@ -9,10 +9,9 @@
 
 'use strict';
 
-/* ── GITHUB TOKEN ────────────────────────────────────────────── */
-// Get from: GitHub → Settings → Developer Settings → Personal Access Tokens → Tokens (classic)
-// Permissions needed: repo (or just 'public_repo' if repo is public)
-const GH_TOKEN = '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';
+// ⚠ Token removed — API calls are proxied through /api/gallery (Vercel serverless)
+// The GH_TOKEN is stored as a Vercel environment variable, never in client code.
+const GH_TOKEN = ''; // NOT USED IN FRONTEND — see /api/gallery.js
 
 /* ── 1. AUTH ──────────────────────────────────────────────────── */
 const AUTH = { USERNAME: 'korata', PASSWORD: 'korata1250', STORAGE_KEY: 'admin_authed' };
@@ -21,73 +20,46 @@ function doLogin() { localStorage.setItem(AUTH.STORAGE_KEY, '1'); }
 function doLogout() { localStorage.removeItem(AUTH.STORAGE_KEY); window.location.reload(); }
 function checkCred(u, p) { return u === AUTH.USERNAME && p === AUTH.PASSWORD; }
 
-/* ── 2. GITHUB STORAGE OPERATIONS ─────────────────────────────── */
+/* ── 2. GALLERY API (proxied through Vercel serverless — no token in frontend) ── */
 
-const GH_API = `https://api.github.com/repos/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/contents/${CONFIG.GH_FILE}`;
-
-function ghHeaders() {
-  return {
-    'Authorization': `token ${GH_TOKEN}`,
-    'Accept': 'application/vnd.github.v3+json',
-    'Content-Type': 'application/json',
-  };
-}
+// All writes go through /api/gallery which holds GH_TOKEN in server env variables.
+// Reads go directly to raw.githubusercontent.com (public, no auth needed).
 
 /**
- * Reads the current gallery-data.json from GitHub API.
- * Returns { data:Array, sha:string } — sha needed for updates.
+ * Appends a new gallery record via the secure serverless proxy.
+ * @param {object} rec
  */
-async function ghRead() {
-  const res = await fetch(`${GH_API}?t=${Date.now()}`, { headers: ghHeaders() });
-  if (res.status === 404) return { data: [], sha: null };
-  if (!res.ok) throw new Error(`GitHub read failed: ${res.status}`);
-  const json = await res.json();
-  const data = JSON.parse(atob(json.content.replace(/\n/g, '')));
-  return { data: Array.isArray(data) ? data : [], sha: json.sha };
-}
-
-/**
- * Writes the gallery-data array back to GitHub.
- * @param {Array}  data — full gallery array
- * @param {string} sha  — current file SHA (null for first write)
- * @param {string} msg  — commit message
- */
-async function ghWrite(data, sha, msg = 'Update gallery') {
-  const body = {
-    message: msg,
-    content: btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2)))),
-    branch: CONFIG.GH_BRANCH,
-  };
-  if (sha) body.sha = sha;
-  const res = await fetch(GH_API, { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
+async function ghAddRecord(rec) {
+  const res = await fetch('/api/gallery', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ record: rec }),
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.message || `GitHub write failed: ${res.status}`);
+    throw new Error(err.error || `Save failed: ${res.status}`);
   }
-}
-
-/** Adds a new record to gallery-data.json on GitHub. */
-async function ghAddRecord(rec) {
-  const { data, sha } = await ghRead();
-  const newData = [rec, ...data];
-  await ghWrite(newData, sha, `Add: ${rec.name}`);
   invalidateCache();
 }
 
-/** Removes a record from gallery-data.json and optionally deletes from Cloudinary. */
+/**
+ * Deletes a gallery record via the secure serverless proxy.
+ * Also attempts to delete image from Cloudinary (best-effort).
+ * @param {object} rec
+ */
 async function ghDeleteRecord(rec) {
-  const { data, sha } = await ghRead();
-
-  // Identify record by publicId (single) or first image publicId (collection)
-  const recKey = rec.type === 'collection' ? rec.images?.[0]?.publicId : rec.publicId;
-  const newData = data.filter(r => {
-    const k = r.type === 'collection' ? r.images?.[0]?.publicId : r.publicId;
-    return k !== recKey;
+  const publicId = rec.type === 'collection' ? rec.images?.[0]?.publicId : rec.publicId;
+  const res = await fetch('/api/gallery', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ publicId, name: rec.name }),
   });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Delete failed: ${res.status}`);
+  }
 
-  await ghWrite(newData, sha, `Delete: ${rec.name}`);
-
-  // Also delete image file(s) from Cloudinary (best-effort)
+  // Also delete image file(s) from Cloudinary (best-effort, non-blocking)
   const ids = rec.type === 'collection'
     ? rec.images.map(i => i.publicId).filter(Boolean)
     : [rec.publicId].filter(Boolean);
@@ -98,7 +70,7 @@ async function ghDeleteRecord(rec) {
   invalidateCache();
 }
 
-// Expose delete to app.js makeFooter via window
+// Expose delete operation to app.js card footer
 window.AdminOps = { deleteRecord: ghDeleteRecord };
 
 /* ── 3. UPLOAD ENGINE ─────────────────────────────────────────── */
