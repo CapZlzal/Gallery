@@ -167,26 +167,36 @@ async function renderGallery({ isAdmin = false, showFilter = true, force = false
     return;
   }
 
+  // 1. Check for deep link to set initial filter
+  const hash = window.location.hash.slice(1);
+  if (hash && !activeFilter && currentPage === 1) { 
+    const record = all.find(i => i._fbKey === hash);
+    if (record) {
+      activeFilter = record.category; 
+      // User request: hide filter bar if entered via deep link to maintain category focus
+      const bar = document.getElementById('filter-bar');
+      if (bar) bar.style.display = 'none';
+      const stats = document.querySelector('.stats-container'); // Optional: hide stats too for cleaner focus
+      if (stats) stats.style.display = 'none';
+    }
+  }
+
   const images = activeFilter ? all.filter(i => i.category === activeFilter) : all;
   if (count) count.textContent = all.length;
   if (clear) clear.hidden = all.length === 0;
   updateStats(all);
 
+  // Jump to specific page for deep link in the NOW FILTERED list
+  if (hash && currentPage === 1) {
+    const targetIdx = images.findIndex(i => i._fbKey === hash);
+    if (targetIdx !== -1) {
+      currentPage = Math.ceil((targetIdx + 1) / CONFIG.PAGE_SIZE);
+    }
+  }
+
   grid.innerHTML = '';
   if (!images.length) { if (empty) empty.style.display = ''; return; }
   if (empty) empty.style.display = 'none';
-
-  // Deep link logic: handled before pagination slicing
-  const hash = window.location.hash.slice(1);
-  if (hash && !activeFilter && currentPage === 1) { // Only auto-jump on initial load of 'All' or if on page 1
-    const targetIdx = images.findIndex(i => i._fbKey === hash);
-    if (targetIdx !== -1) {
-      const targetPage = Math.ceil((targetIdx + 1) / CONFIG.PAGE_SIZE);
-      if (targetPage !== currentPage) {
-        currentPage = targetPage;
-      }
-    }
-  }
 
   // Slice for pagination
   const start = (currentPage - 1) * CONFIG.PAGE_SIZE;
