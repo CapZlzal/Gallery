@@ -16,7 +16,7 @@ const CONFIG = {
   GALLERY_TAG: 'hg_gallery',
   HIDDEN_KEY: 'hg_hidden',
   CACHE_KEY: 'hg_cache',
-  CACHE_TTL_MS: 5 * 60 * 1000,
+  CACHE_TTL_MS: 0, // Disable cache to show live updates correctly across devices
   WHATSAPP_NUM: '201099160942',
   LANG_KEY: 'hg_lang',
   THEME_KEY: 'hg_theme',
