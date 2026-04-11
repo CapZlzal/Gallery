@@ -249,7 +249,12 @@ function makeShell(){const c=document.createElement('article');c.className='gall
 function makeImgWrap(){const d=document.createElement('div');d.className='card-img-wrap';return d;}
 function makeImg(url,alt){
   const i=document.createElement('img');i.src=url;i.alt=alt||'';i.loading='lazy';
-  i.onerror=()=>{i.src=svgPlaceholder();};return i;
+  i.onerror=()=>{
+    // Hide the card if image is 404 — prevents showing broken old resources
+    const card=i.closest('.gallery-card');
+    if(card) card.style.display='none';
+  };
+  return i;
 }
 function makeOverlay(){
   const d=document.createElement('div');d.className='card-img-overlay';
