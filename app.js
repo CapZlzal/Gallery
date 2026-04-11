@@ -176,6 +176,18 @@ async function renderGallery({ isAdmin = false, showFilter = true, force = false
   if (!images.length) { if (empty) empty.style.display = ''; return; }
   if (empty) empty.style.display = 'none';
 
+  // Deep link logic: handled before pagination slicing
+  const hash = window.location.hash.slice(1);
+  if (hash && !activeFilter && currentPage === 1) { // Only auto-jump on initial load of 'All' or if on page 1
+    const targetIdx = images.findIndex(i => i._fbKey === hash);
+    if (targetIdx !== -1) {
+      const targetPage = Math.ceil((targetIdx + 1) / CONFIG.PAGE_SIZE);
+      if (targetPage !== currentPage) {
+        currentPage = targetPage;
+      }
+    }
+  }
+
   // Slice for pagination
   const start = (currentPage - 1) * CONFIG.PAGE_SIZE;
   const paged = images.slice(start, start + CONFIG.PAGE_SIZE);
@@ -189,13 +201,14 @@ async function renderGallery({ isAdmin = false, showFilter = true, force = false
 
   if (showFilter) renderFilterBar(all, isAdmin);
 
-  // Deep link: if URL has #slug, open that card's lightbox
-  const hash = window.location.hash.slice(1);
+  // Smooth scroll and open if item found on current page
   if (hash) {
-    const target = grid.querySelector(`[data-slug="${CSS.escape(hash)}"]`);
+    const target = document.getElementById(hash);
     if (target) {
-      setTimeout(() => target.querySelector('.card-img-wrap')?.click(), 120);
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setTimeout(() => {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.querySelector('.card-img-wrap')?.click();
+      }, 150);
     }
   }
 }
@@ -225,9 +238,8 @@ function makeSlug(name, publicId) {
 }
 
 function buildSingleCard(rec, isAdmin) {
-  const slug = makeSlug(rec.name, rec.publicId);
+  const slug = rec._fbKey; // Use unique ID for reliability
   const card = makeShell();
-  card.dataset.slug = slug;
   card.id = slug;
   const wrap = makeImgWrap();
   wrap.addEventListener('click', () => { openLightbox([{ url: rec.url }], 0); history.replaceState(null, '', `#${slug}`); });
@@ -237,10 +249,10 @@ function buildSingleCard(rec, isAdmin) {
 }
 
 function buildCollectionCard(rec, isAdmin) {
-  const { name, category, images } = rec;
-  const slug = makeSlug(name, images[0]?.publicId);
+  const { name, category, images, _fbKey } = rec;
+  const slug = _fbKey;
   const card = makeShell(); card.classList.add('card-slider');
-  card.dataset.slug = slug; card.id = slug;
+  card.id = slug;
   let cur = 0;
   const wrap = makeImgWrap();
   const img = makeImg(images[0]?.url || '', name); img.style.transition = 'opacity .22s';
@@ -312,7 +324,7 @@ function makeFooter(rec, isAdmin) {
   acts.appendChild(btnWA);
 
   // Copy direct link — visible to everyone
-  const slug = rec._slug || makeSlug(rec.name, rec.publicId);
+  const slug = rec._fbKey;
   const bLink = document.createElement('button'); bLink.className = 'btn btn-sm btn-ghost';
   bLink.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`;
   bLink.title = currentLang === 'ar' ? 'نسخ الرابط' : 'Copy link';
