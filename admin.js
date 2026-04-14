@@ -58,6 +58,47 @@ async function appendToManifest(rec) {
   invalidateCache();
 }
 
+/* ── 2.5 CATEGORY MANAGEMENT ─────────────────────────────── */
+async function fetchCategories() {
+  try {
+    const res = await fetch(`${FB_URL}/categories.json`);
+    if (!res.ok) return {};
+    const data = await res.json();
+    return data && typeof data === 'object' ? data : {};
+  } catch { return {}; }
+}
+
+async function saveCategory(key, label) {
+  if (!key || !label) return;
+  try {
+    await fetch(`${FB_URL}/categories/${key.json || key}.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(label)
+    });
+  } catch (err) { console.error('Failed to save category:', err); }
+}
+
+async function syncCategories() {
+  const categories = await fetchCategories();
+  const select = document.getElementById('inp-category');
+  if (!select) return;
+
+  // Defaults
+  let html = `
+    <option value="logo">Logo — شعار</option>
+    <option value="photo" selected>Photo — صورة عادية</option>
+  `;
+
+  Object.entries(categories).forEach(([key, label]) => {
+    if (key === 'logo' || key === 'photo') return;
+    html += `<option value="${key}">${label}</option>`;
+  });
+
+  html += `<option value="other">${currentLang === 'ar' ? 'أخرى — Other' : 'Other'}</option>`;
+  select.innerHTML = html;
+}
+
 /** Upload one image to Cloudinary via UNSIGNED preset. Returns { url, publicId }. */
 async function uploadToCloudinary(file, name, category, extra = {}) {
   const { CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET } = CONFIG;
@@ -166,6 +207,12 @@ async function handleUpload() {
   }
 
   const category = resolveCategory();
+  
+  // Auto-save new category to Firebase
+  if (document.getElementById('inp-category')?.value === 'other') {
+    await saveCategory(category, category);
+  }
+
   const btnUpload = document.getElementById('btn-upload');
   const btnSelect = document.getElementById('btn-select');
 
@@ -222,6 +269,7 @@ async function handleUpload() {
   setProgress(0);
 
   await renderGallery({ isAdmin: true, showFilter: true, force: true });
+  await syncCategories(); 
 
   if (failed === 0) {
     setStatus(`✓ ${t('uploadOk')}`, 'success');
@@ -241,6 +289,7 @@ function addDragHandlers(zone) {
   zone.addEventListener('dragleave', e => { if (!zone.contains(e.relatedTarget)) zone.classList.remove('drag-over'); });
   zone.addEventListener('drop', e => {
     e.preventDefault();
+    e.stopPropagation();
     zone.classList.remove('drag-over');
     const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
     if (!files.length) { showToast(currentLang === 'ar' ? 'فقط ملفات الصور مسموحة' : 'Images only', 'error'); return; }
@@ -260,6 +309,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loginOverlay.hidden = true;
     adminDash.classList.add('visible');
     renderGallery({ isAdmin: true, showFilter: true });
+    syncCategories();
   } else {
     loginOverlay.hidden = false;
     setTimeout(() => document.getElementById('inp-username')?.focus(), 120);

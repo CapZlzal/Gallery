@@ -149,6 +149,7 @@ function makeSlug(name, publicId) {
 /* ── 6. GALLERY RENDER ──────────────────────────────────────── */
 let activeFilter = '';
 let currentPage = 1;
+let fbCats = {};
 
 async function renderGallery({ isAdmin = false, showFilter = true, force = false } = {}) {
   const grid = document.getElementById('gallery-grid');
@@ -161,7 +162,12 @@ async function renderGallery({ isAdmin = false, showFilter = true, force = false
   if (empty) empty.style.display = 'none';
 
   let all;
-  try { all = await fetchGallery(force); }
+  try { 
+    all = await fetchGallery(force);
+    // Fetch persistent categories
+    const catRes = await fetch(`${FB_URL}/categories.json`);
+    if (catRes.ok) fbCats = await catRes.json() || {};
+  }
   catch (err) {
     grid.innerHTML = `<div class="gallery-loading error"><p>⚠ ${t('loadError')}</p></div>`;
     return;
@@ -422,8 +428,25 @@ function renderFilterBar(all, isAdmin = false) {
   const bar = document.getElementById('filter-bar'); if (!bar) return;
   const counts = {};
   all.forEach(i => { counts[i.category] = (counts[i.category] || 0) + 1; });
+
   const chips = [{ key: '', label: `${t('filterAll')} (${all.length})` }];
-  Object.entries(counts).forEach(([k, n]) => chips.push({ key: k, label: `${getCat(k).label} (${n})` }));
+  
+  // Combine built-in + fbCats + dynamic
+  const seen = new Set();
+  const addChip = (k, lbl) => {
+    if (seen.has(k)) return;
+    const n = counts[k] || 0;
+    if (n > 0) {
+      chips.push({ key: k, label: `${lbl} (${n})` });
+      seen.add(k);
+    }
+  };
+
+  addChip('logo', 'Logo');
+  addChip('photo', 'Photo');
+  Object.entries(fbCats).forEach(([k, l]) => addChip(k, l));
+  Object.keys(counts).forEach(k => addChip(k, k));
+
   bar.innerHTML = '';
   chips.forEach(({ key, label }) => {
     const c = document.createElement('button');
