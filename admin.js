@@ -79,24 +79,98 @@ async function saveCategory(key, label) {
   } catch (err) { console.error('Failed to save category:', err); }
 }
 
+async function deleteCategory(key) {
+  if (!key) return;
+  try {
+    const res = await fetch(`${FB_URL}/categories/${key}.json`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Delete failed');
+    return true;
+  } catch (err) { console.error(err); return false; }
+}
+
+/* ── 2.6 SETTINGS MANAGEMENT ────────────────────────────── */
+async function fetchSettings() {
+  try {
+    const res = await fetch(`${FB_URL}/settings.json`);
+    if (!res.ok) return {};
+    return await res.json() || {};
+  } catch { return {}; }
+}
+
+async function saveSettings(data) {
+  try {
+    await fetch(`${FB_URL}/settings.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    showToast(currentLang === 'ar' ? 'تم حفظ الإعدادات' : 'Settings saved', 'success');
+  } catch (err) { console.error(err); showToast('Error saving settings', 'error'); }
+}
+
 async function syncCategories() {
   const categories = await fetchCategories();
   const select = document.getElementById('inp-category');
-  if (!select) return;
+  const mgr = document.getElementById('category-manager-list');
+  
+  if (select) {
+    let html = `<option value="logo">Logo — شعار</option><option value="photo" selected>Photo — صورة عادية</option>`;
+    Object.entries(categories).forEach(([key, label]) => {
+      if (key === 'logo' || key === 'photo') return;
+      html += `<option value="${key}">${label}</option>`;
+    });
+    html += `<option value="other">${currentLang === 'ar' ? 'أخرى — Other' : 'Other'}</option>`;
+    select.innerHTML = html;
+  }
 
-  // Defaults
-  let html = `
-    <option value="logo">Logo — شعار</option>
-    <option value="photo" selected>Photo — صورة عادية</option>
-  `;
+  if (mgr) {
+    mgr.innerHTML = '';
+    const allCats = { logo: 'Logo', photo: 'Photo', ...categories };
+    Object.entries(allCats).forEach(([key, label]) => {
+      const item = document.createElement('div');
+      item.className = 'cat-item';
+      item.innerHTML = `
+        <span class="cat-name">${label}</span>
+        <div class="cat-actions">
+          <button class="btn-cat-del" title="Delete" data-key="${key}">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+          </button>
+        </div>
+      `;
+      // Don't allow deleting built-ins
+      if (key === 'logo' || key === 'photo') item.querySelector('.btn-cat-del').style.display = 'none';
+      
+      item.querySelector('.btn-cat-del')?.addEventListener('click', async () => {
+        if (!confirm(currentLang === 'ar' ? `حذف الفئة "${label}"؟` : `Delete category "${label}"?`)) return;
+        if (await deleteCategory(key)) {
+          syncCategories();
+          showToast(t('deleted'), 'success');
+        }
+      });
+      mgr.appendChild(item);
+    });
+  }
+}
 
-  Object.entries(categories).forEach(([key, label]) => {
-    if (key === 'logo' || key === 'photo') return;
-    html += `<option value="${key}">${label}</option>`;
-  });
-
-  html += `<option value="other">${currentLang === 'ar' ? 'أخرى — Other' : 'Other'}</option>`;
-  select.innerHTML = html;
+async function syncSettingsUI() {
+  const s = await fetchSettings();
+  const ar = document.getElementById('set-name-ar');
+  const en = document.getElementById('set-name-en');
+  const preview = document.getElementById('set-logo-preview');
+  const placeholder = document.getElementById('set-logo-placeholder');
+  
+  if (ar) ar.value = s.siteNameAR || '';
+  if (en) en.value = s.siteNameEN || '';
+  if (preview) {
+    if (s.logoUrl) {
+      preview.src = s.logoUrl;
+      preview.style.display = 'block';
+      if (placeholder) placeholder.style.display = 'none';
+    } else {
+      preview.style.display = 'none';
+      if (placeholder) placeholder.style.display = 'block';
+    }
+  }
 }
 
 /** Upload one image to Cloudinary via UNSIGNED preset. Returns { url, publicId }. */
@@ -310,6 +384,7 @@ document.addEventListener('DOMContentLoaded', () => {
     adminDash.classList.add('visible');
     renderGallery({ isAdmin: true, showFilter: true });
     syncCategories();
+    syncSettingsUI();
   } else {
     loginOverlay.hidden = false;
     setTimeout(() => document.getElementById('inp-username')?.focus(), 120);
@@ -332,6 +407,8 @@ document.addEventListener('DOMContentLoaded', () => {
         loginOverlay.hidden = true;
         adminDash.classList.add('visible');
         renderGallery({ isAdmin: true, showFilter: true });
+        syncCategories();
+        syncSettingsUI();
       } else {
         errEl.textContent = t('loginErr');
         btnLog.classList.remove('loading');
@@ -397,5 +474,29 @@ document.addEventListener('DOMContentLoaded', () => {
     invalidateCache();
     renderGallery({ isAdmin: true, showFilter: true, force: true });
     showToast(t('deleted'), 'success');
+  });
+
+  // Settings Wiring
+  document.getElementById('btn-save-settings')?.addEventListener('click', async () => {
+    const ar = document.getElementById('set-name-ar').value.trim();
+    const en = document.getElementById('set-name-en').value.trim();
+    const curSettings = await fetchSettings();
+    await saveSettings({ ...curSettings, siteNameAR: ar, siteNameEN: en });
+    setTimeout(() => window.location.reload(), 1500);
+  });
+
+  const inpLogo = document.getElementById('inp-site-logo');
+  document.getElementById('btn-change-logo')?.addEventListener('click', () => inpLogo?.click());
+  
+  inpLogo?.addEventListener('change', async () => {
+    const file = inpLogo.files[0];
+    if (!file) return;
+    try {
+      showToast(currentLang === 'ar' ? 'جاري رفع اللوجو...' : 'Uploading logo...', '');
+      const res = await uploadToCloudinary(file, 'site-logo', 'system');
+      const curSettings = await fetchSettings();
+      await saveSettings({ ...curSettings, logoUrl: res.url });
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (err) { console.error(err); showToast('Logo upload failed', 'error'); }
   });
 });

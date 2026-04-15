@@ -157,6 +157,63 @@ h1,h2,h3{font-family:var(--fh);letter-spacing:-.03em}
 }
 .filter-chip:hover,.filter-chip.active{border-color:var(--accent);color:var(--text);background:var(--accent-s)}
 
+/* ── ADMIN COMMAND CENTER (PRO REWORK) ─────────────────────────────── */
+.admin-settings-section{padding:30px 0; border-bottom:1px solid var(--border); background:rgba(255,255,255,0.01)}
+.settings-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(400px,1fr)); gap:30px}
+@media(max-width:767px){ .settings-grid{grid-template-columns:1fr} }
+
+.settings-card{
+  background:var(--bg-card); padding:28px; border-radius:24px; border:1px solid var(--border);
+  box-shadow:var(--sh-lg); display:flex; flex-direction:column; gap:20px;
+  position:relative; overflow:hidden;
+}
+.settings-card-header{display:flex; align-items:center; gap:16px; margin-bottom:10px}
+.settings-icon{
+  width:42px; height:42px; border-radius:12px; display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,0.05); color:#fff;
+}
+.settings-icon.purple{background:var(--accent-s); color:var(--accent-l)}
+.settings-icon.blue{background:rgba(56,189,248,0.1); color:#38bdf8}
+.settings-card-title{font-size:1.15rem; font-weight:700; color:#fff}
+
+/* Branding Profile */
+.branding-profile{
+  display:flex; align-items:center; gap:24px; padding:20px; 
+  background:rgba(255,255,255,0.02); border-radius:18px; border:1px dashed var(--border);
+}
+.logo-preview-box{
+  width:85px; height:85px; border-radius:50%; background:#fff; 
+  display:flex; align-items:center; justify-content:center; border:3px solid var(--bg-surface);
+  box-shadow:var(--sh); overflow:hidden; position:relative;
+}
+.logo-preview-box img{width:100%; height:100%; object-fit:contain; padding:8px}
+.logo-placeholder{font-size:2rem; font-weight:800; color:var(--bg-base)}
+.logo-actions{display:flex; flex-direction:column; gap:6px}
+.logo-hint{font-size:.75rem; color:var(--text-2); margin-top:4px}
+
+.form-grid{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+@media(max-width:480px){ .form-grid{grid-template-columns:1fr} }
+.btn-block{width:100%; height:48px; font-weight:700; justify-content:center; border-radius:14px}
+
+/* Category Manager Pro */
+.cat-list-container{
+  background:rgba(0,0,0,0.15); border-radius:18px; padding:8px; border:1px solid var(--border);
+}
+.cat-list-pro{display:flex; flex-direction:column; gap:6px; max-height:240px; overflow-y:auto}
+.cat-item{
+  display:flex; justify-content:space-between; align-items:center;
+  padding:12px 16px; border-radius:12px; background:var(--bg-surface); 
+  border:1px solid transparent; transition:all .2s ease;
+}
+.cat-item:hover{background:var(--bg-elevated); border-color:var(--accent-s); transform:translateX(-4px)}
+.cat-name{font-weight:600; color:var(--text); font-size:.92rem}
+.cat-actions .btn-cat-del{
+  width:32px; height:32px; border-radius:8px; display:flex; align-items:center; justify-content:center;
+  color:var(--text-2); transition:all .2s;
+}
+.cat-actions .btn-cat-del:hover{background:var(--danger-s); color:var(--danger)}
+.cat-footer{padding-top:10px}
+
 /* Empty state */
 .empty-state{text-align:center;padding:80px 20px;color:var(--text-m)}
 .empty-state svg{margin:0 auto 16px;opacity:.3}

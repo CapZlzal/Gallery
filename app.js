@@ -146,6 +146,30 @@ function makeSlug(name, publicId) {
   return base || publicId?.split('/').pop() || 'item';
 }
 
+async function syncBranding() {
+  try {
+    const res = await fetch(`${FB_URL}/settings.json`);
+    if (!res.ok) return;
+    const s = await res.json();
+    if (!s) return;
+
+    const titleEl = document.getElementById('site-title-text');
+    const markEl = document.getElementById('site-logo-mark');
+    const imgEl = document.getElementById('site-logo-img');
+
+    if (titleEl) titleEl.textContent = currentLang === 'ar' ? (s.siteNameAR || 'معرض حازم') : (s.siteNameEN || 'Hazem Gallery');
+    
+    if (imgEl && s.logoUrl) {
+      imgEl.src = s.logoUrl;
+      imgEl.style.display = 'inline-block';
+      if (markEl) markEl.style.display = 'none';
+    } else if (markEl) {
+      markEl.style.display = 'inline-block';
+      if (imgEl) imgEl.style.display = 'none';
+    }
+  } catch (err) { console.error('Branding sync failed:', err); }
+}
+
 /* ── 6. GALLERY RENDER ──────────────────────────────────────── */
 let activeFilter = '';
 let currentPage = 1;
@@ -164,9 +188,13 @@ async function renderGallery({ isAdmin = false, showFilter = true, force = false
   let all;
   try { 
     all = await fetchGallery(force);
-    // Fetch persistent categories
-    const catRes = await fetch(`${FB_URL}/categories.json`);
+    // Fetch persistent categories & settings
+    const [catRes, setRes] = await Promise.all([
+      fetch(`${FB_URL}/categories.json`),
+      fetch(`${FB_URL}/settings.json`)
+    ]);
     if (catRes.ok) fbCats = await catRes.json() || {};
+    syncBranding(); 
   }
   catch (err) {
     grid.innerHTML = `<div class="gallery-loading error"><p>⚠ ${t('loadError')}</p></div>`;

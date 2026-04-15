@@ -48,10 +48,13 @@
     <!-- Header -->
     <header class="site-header">
       <div class="container header-inner">
-        <div class="logo">
-          <span class="logo-mark">H</span>
-          <span data-i18n="siteTitle">Hazem Gallery</span>
-        </div>
+        <a href="index.html" style="text-decoration:none;color:inherit;">
+          <div class="logo">
+            <img id="site-logo-img" src="" style="display:none;width:32px;height:32px;object-fit:contain;margin-left:8px;" />
+            <span id="site-logo-mark" class="logo-mark">H</span>
+            <span id="site-title-text" data-i18n="siteTitle">Hazem Gallery</span>
+          </div>
+        </a>
         <div class="header-controls">
           <button class="icon-btn" id="btn-lang" title="Switch language">ع</button>
           <button class="icon-btn" id="btn-theme" title="Toggle theme">☀️</button>
@@ -87,6 +90,71 @@
         </div>
       </div>
     </div>
+
+    <!-- Command Center (Settings & Categories) -->
+    <section class="admin-settings-section">
+      <div class="container">
+        <div class="settings-grid">
+          
+          <!-- BRANDING CARD -->
+          <div class="settings-card branding-card">
+            <div class="settings-card-header">
+              <div class="settings-icon purple">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+              </div>
+              <h3 class="settings-card-title">إعدادات الهوية والشعار</h3>
+            </div>
+            
+            <div class="branding-profile">
+              <div class="logo-preview-box">
+                <img id="set-logo-preview" src="" alt="logo" />
+                <div id="set-logo-placeholder" class="logo-placeholder">H</div>
+              </div>
+              <div class="logo-actions">
+                <button class="btn btn-sm btn-outline" id="btn-change-logo" data-i18n="changeLogo">تغيير الشعار</button>
+                <p class="logo-hint">JPG, PNG, SVG (Max 2MB)</p>
+                <input type="file" id="inp-site-logo" accept="image/*" hidden />
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <div class="form-group">
+                <label class="form-label" data-i18n="siteNameAr">الاسم (العربية)</label>
+                <input class="form-input" id="set-name-ar" type="text" placeholder="مثلاً: معرض حازم" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" data-i18n="siteNameEn">Name (English)</label>
+                <input class="form-input" id="set-name-en" type="text" placeholder="e.g. Hazem Gallery" />
+              </div>
+            </div>
+            <button class="btn btn-accent btn-block" id="btn-save-settings">
+              <span data-i18n="saveSettings">حفظ التغييرات</span>
+            </button>
+          </div>
+
+          <!-- CATEGORY CARD -->
+          <div class="settings-card category-card">
+            <div class="settings-card-header">
+              <div class="settings-icon blue">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+              </div>
+              <h3 class="settings-card-title">إدارة الأقسام (Categories)</h3>
+            </div>
+            
+            <div class="cat-list-container">
+              <div id="category-manager-list" class="cat-list-pro">
+                 <p class="loading-cats" data-i18n="loading">جاري التحميل...</p>
+              </div>
+            </div>
+            
+            <div class="cat-footer">
+              <p class="cat-hint" data-i18n="catHint">* حذف القسم لا يؤثر على الصور المرفوعة مسبقاً.</p>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
 
     <!-- Upload section -->
     <section class="upload-section">
